@@ -1,0 +1,58 @@
+{
+  "name": "@newtalaria/browser",
+  "version": "0.1.19",
+  "description": "Talaria browser SDK — error capture and session replay (rrweb)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && esbuild src/index.ts --bundle --format=esm --platform=browser --outfile=dist/index.js --sourcemap && npm run build:iife && npm run copy:example",
+    "build:iife": "esbuild src/iife.ts --bundle --format=iife --platform=browser --outfile=dist/talaria.browser.iife.js --sourcemap",
+    "copy:example": "mkdir -p ../../examples/sdk-spa/vendor && cp dist/index.js ../../examples/sdk-spa/vendor/talaria.js && cp dist/index.js.map ../../examples/sdk-spa/vendor/talaria.js.map",
+    "build:types": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "prepare": "npm run build",
+    "test": "esbuild test/*.test.ts --bundle --platform=node --format=esm --outdir=test/dist && node --test test/dist/*.test.js",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "rrweb": "^2.0.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0"
+  },
+  "sideEffects": false,
+  "license": "MIT",
+  "keywords": [
+    "talaria",
+    "error-tracking",
+    "session-replay",
+    "rrweb"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dunatron/new_talaria.git",
+    "directory": "new_talaria_js/packages/browser"
+  },
+  "homepage": "https://github.com/dunatron/new_talaria/tree/main/new_talaria_js/packages/browser",
+  "bugs": {
+    "url": "https://github.com/dunatron/new_talaria/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
