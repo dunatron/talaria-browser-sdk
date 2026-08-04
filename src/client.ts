@@ -1,7 +1,9 @@
 import type {
+  BeforeSendEvent,
   CaptureContext,
   ExceptionData,
   ExceptionMechanism,
+  LoggerOptions,
   ResolvedOptions,
   SeverityLevel,
   TalariaInitOptions,
@@ -17,6 +19,11 @@ import {
   parseBrowserContext,
   type BrowserContext,
 } from './utils/browser_context.js';
+import {
+  maxSeverity,
+  normalizeSeverity,
+  severityAtLeast,
+} from './utils/severity.js';
 import { mergeTags, warnSuspiciousTags, type TagMap } from './utils/tags.js';
 import {
   applySourceLocation,
@@ -268,6 +275,10 @@ function resolveOptions(options: TalariaInitOptions): ResolvedOptions {
     apiKey: options.apiKey.trim(),
     environment: normalizeEnvironment(String(options.environment)),
     release: options.release,
+    minLevel:
+      normalizeSeverity(String(options.minLevel ?? 'debug')) ?? 'debug',
+    sampleRate: clamp01(options.sampleRate ?? 1),
+    beforeSend: options.beforeSend,
     replaysSessionSampleRate: clamp01(options.replaysSessionSampleRate ?? 0),
     replaysOnErrorSampleRate: clamp01(options.replaysOnErrorSampleRate ?? 1),
     replaysErrorAfterMs: normalizeErrorAfterMs(options.replaysErrorAfterMs),
@@ -626,12 +637,73 @@ export class TalariaClient {
     });
   }
 
+  debug(message: string, context?: CaptureContext): Promise<void> {
+    return this.captureMessage(message, 'debug', context);
+  }
+
+  info(message: string, context?: CaptureContext): Promise<void> {
+    return this.captureMessage(message, 'info', context);
+  }
+
+  warning(message: string, context?: CaptureContext): Promise<void> {
+    return this.captureMessage(message, 'warning', context);
+  }
+
+  /** Alias of {@link warning} — wire level stays `'warning'`. */
+  warn(message: string, context?: CaptureContext): Promise<void> {
+    return this.captureMessage(message, 'warning', context);
+  }
+
+  error(message: string, context?: CaptureContext): Promise<void> {
+    return this.captureMessage(message, 'error', context);
+  }
+
+  fatal(message: string, context?: CaptureContext): Promise<void> {
+    return this.captureMessage(message, 'fatal', context);
+  }
+
+  log(
+    level: SeverityLevel,
+    message: string,
+    context?: CaptureContext,
+  ): Promise<void> {
+    return this.captureMessage(message, level, context);
+  }
+
+  getMinLevel(): SeverityLevel {
+    return this.options?.minLevel ?? 'debug';
+  }
+
+  setMinLevel(level: SeverityLevel): void {
+    if (!this.options) return;
+    this.options.minLevel =
+      normalizeSeverity(String(level)) ?? this.options.minLevel;
+  }
+
+  isLevelEnabled(level: SeverityLevel): boolean {
+    return severityAtLeast(level, this.getMinLevel());
+  }
+
+  /**
+   * Returns a scoped logger that merges tags / minLevel into every capture.
+   * Nested `child` / `withTags` merge further (later tag keys win; minLevel
+   * can only raise the floor).
+   */
+  logger(options?: LoggerOptions): ScopedTalaria {
+    return createScopedTalaria(
+      this,
+      mergeTags(options?.tags),
+      options?.minLevel,
+    );
+  }
+
   /**
    * Returns a scoped capture facade that merges [tags] into every event.
    * Nested `withTags` calls merge further (later keys win).
+   * Shorthand for `logger({ tags })`.
    */
   withTags(tags: Record<string, string>): ScopedTalaria {
-    return createScopedTalaria(this, mergeTags(tags));
+    return this.logger({ tags });
   }
 
   async flush(opts?: {
@@ -777,11 +849,58 @@ export class TalariaClient {
     }
     if (this.ingestDisabled) return;
 
+    // Cheap gates before replay work / beforeSend.
+    if (!severityAtLeast(args.level, this.options.minLevel)) return;
+    if (Math.random() >= this.options.sampleRate) return;
+
+    let message = args.message;
+    let level = args.level;
+    let title = args.title ?? args.context?.title;
+    let exception = args.exception;
+    let contextExtra = args.context?.extra as Record<string, unknown> | undefined;
+    let userId = args.context?.userId ?? this.options.userId;
+    let appTags = mergeTags(
+      this.browserContext ? browserContextTags(this.browserContext) : {},
+      this.options.tags,
+      args.context?.tags,
+    );
+
+    if (this.options.beforeSend) {
+      const event: BeforeSendEvent = {
+        message,
+        level,
+        eventType: levelToEventType(level),
+        title,
+        tags: Object.keys(appTags).length ? { ...appTags } : undefined,
+        extra: contextExtra ? { ...contextExtra } : undefined,
+        userId,
+        exception,
+      };
+      let result: BeforeSendEvent | null;
+      try {
+        result = this.options.beforeSend(event, {
+          originalContext: args.context,
+          isException: Boolean(args.exception),
+        });
+      } catch (error) {
+        console.warn('@newtalaria/browser: beforeSend failed', error);
+        return;
+      }
+      if (result === null) return;
+      message = result.message;
+      level = result.level;
+      title = result.title;
+      exception = result.exception;
+      contextExtra = result.extra;
+      userId = result.userId;
+      appTags = mergeTags(result.tags);
+    }
+
     // Stamp occurrence before replay flush/upload — that work can take seconds.
     // Server `createdAt` is ingest time; wire `timestamp` must stay occurrence time.
     const occurredAt = new Date();
 
-    const isErrorLike = args.level === 'error' || args.level === 'fatal';
+    const isErrorLike = level === 'error' || level === 'fatal';
     let errorClipOutcome: ReplayCaptureOutcome | null = null;
     let attemptedErrorClip = false;
 
@@ -855,18 +974,9 @@ export class TalariaClient {
 
     const queuedMs = Math.max(0, Date.now() - occurredAt.getTime());
 
-    const tags = applyReplayCaptureTags(
-      mergeTags(
-        this.browserContext ? browserContextTags(this.browserContext) : {},
-        this.options.tags,
-        args.context?.tags,
-      ),
-      errorClipOutcome,
-    );
+    const tags = applyReplayCaptureTags(appTags, errorClipOutcome);
     warnSuspiciousTags(tags, this.options.environment);
-    const scrubbedContextExtra = scrubLegacyExceptionExtra(
-      args.context?.extra as Record<string, unknown> | undefined,
-    );
+    const scrubbedContextExtra = scrubLegacyExceptionExtra(contextExtra);
     const extra = mergeReplayCaptureExtra(
       {
         ...(this.browserContext
@@ -899,16 +1009,16 @@ export class TalariaClient {
 
     try {
       await ingestEvent(this.transport, {
-        message: args.message,
+        message,
         environment: this.options.environment,
-        level: args.level,
-        eventType: levelToEventType(args.level),
-        title: args.title ?? args.context?.title,
+        level,
+        eventType: levelToEventType(level),
+        title,
         stackTrace: args.stackTrace,
-        exception: args.exception,
+        exception,
         platform: args.platform,
         release: this.options.release,
-        userId: args.context?.userId ?? this.options.userId,
+        userId,
         sessionId: this.sessionId ?? undefined,
         replayId: replayId ?? undefined,
         url: typeof location !== 'undefined' ? location.href : undefined,
@@ -1689,8 +1799,23 @@ export class TalariaClient {
   }
 }
 
-/** Capture surface that inherits tags from `withTags`. */
+/**
+ * Scoped logger / capture surface from `Talaria.logger` / `withTags`.
+ * Inherits tags and an optional minLevel floor (children can only raise it).
+ */
 export interface ScopedTalaria {
+  debug(message: string, context?: CaptureContext): Promise<void>;
+  info(message: string, context?: CaptureContext): Promise<void>;
+  warning(message: string, context?: CaptureContext): Promise<void>;
+  /** Alias of {@link warning} — wire level stays `'warning'`. */
+  warn(message: string, context?: CaptureContext): Promise<void>;
+  error(message: string, context?: CaptureContext): Promise<void>;
+  fatal(message: string, context?: CaptureContext): Promise<void>;
+  log(
+    level: SeverityLevel,
+    message: string,
+    context?: CaptureContext,
+  ): Promise<void>;
   captureException(error: unknown, context?: CaptureContext): Promise<void>;
   captureMessage(
     message: string,
@@ -1698,26 +1823,97 @@ export interface ScopedTalaria {
     context?: CaptureContext,
   ): Promise<void>;
   withTags(tags: Record<string, string>): ScopedTalaria;
+  withMinLevel(minLevel: SeverityLevel): ScopedTalaria;
+  child(options: LoggerOptions): ScopedTalaria;
+  isLevelEnabled(level: SeverityLevel): boolean;
+  getMinLevel(): SeverityLevel;
 }
+
+/** @deprecated Use {@link ScopedTalaria} — same type, logger-oriented name. */
+export type TalariaLogger = ScopedTalaria;
 
 function createScopedTalaria(
   client: TalariaClient,
   scopeTags: TagMap,
+  scopeMinLevel?: SeverityLevel,
 ): ScopedTalaria {
+  const effectiveMin = (): SeverityLevel =>
+    scopeMinLevel
+      ? maxSeverity(client.getMinLevel(), scopeMinLevel)
+      : client.getMinLevel();
+
   const mergeContext = (context?: CaptureContext): CaptureContext => ({
     ...context,
     tags: mergeTags(scopeTags, context?.tags),
   });
 
+  const captureMessage = (
+    message: string,
+    level: SeverityLevel = 'info',
+    context?: CaptureContext,
+  ): Promise<void> => {
+    if (!severityAtLeast(level, effectiveMin())) return Promise.resolve();
+    return client.captureMessage(message, level, mergeContext(context));
+  };
+
+  const log = (
+    level: SeverityLevel,
+    message: string,
+    context?: CaptureContext,
+  ): Promise<void> => captureMessage(message, level, context);
+
+  const raiseScopeMin = (next?: SeverityLevel): SeverityLevel | undefined => {
+    if (next === undefined) return scopeMinLevel;
+    return scopeMinLevel ? maxSeverity(scopeMinLevel, next) : next;
+  };
+
   return {
+    debug(message, context) {
+      return log('debug', message, context);
+    },
+    info(message, context) {
+      return log('info', message, context);
+    },
+    warning(message, context) {
+      return log('warning', message, context);
+    },
+    warn(message, context) {
+      return log('warning', message, context);
+    },
+    error(message, context) {
+      return log('error', message, context);
+    },
+    fatal(message, context) {
+      return log('fatal', message, context);
+    },
+    log,
     captureException(error, context) {
+      if (!severityAtLeast('error', effectiveMin())) return Promise.resolve();
       return client.captureException(error, mergeContext(context));
     },
-    captureMessage(message, level, context) {
-      return client.captureMessage(message, level, mergeContext(context));
-    },
+    captureMessage,
     withTags(tags) {
-      return createScopedTalaria(client, mergeTags(scopeTags, tags));
+      return createScopedTalaria(
+        client,
+        mergeTags(scopeTags, tags),
+        scopeMinLevel,
+      );
+    },
+    withMinLevel(minLevel) {
+      return createScopedTalaria(client, scopeTags, raiseScopeMin(minLevel));
+    },
+    child(options) {
+      return createScopedTalaria(
+        client,
+        mergeTags(scopeTags, options.tags),
+        raiseScopeMin(options.minLevel),
+      );
+    },
+    isLevelEnabled(level) {
+      return severityAtLeast(level, effectiveMin());
+    },
+    getMinLevel() {
+      return effectiveMin();
     },
   };
 }

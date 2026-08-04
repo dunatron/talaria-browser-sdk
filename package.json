@@ -1,6 +1,6 @@
 {
   "name": "@newtalaria/browser",
-  "version": "0.1.19",
+  "version": "0.1.21",
   "description": "Talaria browser SDK — error capture and session replay (rrweb)",
   "type": "module",
   "main": "./dist/index.js",

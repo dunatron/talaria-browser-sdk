@@ -1,8 +1,8 @@
 # `@newtalaria/browser`
 
-Browser SDK for [Talaria](https://github.com/) — error capture and **session replay** (rrweb event streams, not video).
+Official browser SDK for [Talaria](https://www.newtalaria.com) — capture exceptions and application logs, and record **session replay** (rrweb event streams, not video) so your team can see what users did before an issue.
 
-Network calls (`fetch` / XHR) are instrumented as replay breadcrumbs; **only first-party (same-origin) or allowlisted origins** promote failed requests to error events — see [Failed HTTP / network requests](#failed-http--network-requests--events).
+Docs: [JavaScript SDK guide](https://www.newtalaria.com/docs/sdk/javascript) · Dashboard: [one.newtalaria.com](https://one.newtalaria.com)
 
 ## Install
 
@@ -10,404 +10,318 @@ Network calls (`fetch` / XHR) are instrumented as replay breadcrumbs; **only fir
 npm install @newtalaria/browser
 ```
 
-From this monorepo:
+### Script tag (no bundler)
 
-```bash
-cd new_talaria_js/packages/browser
-npm install
-npm run build
+Load the IIFE build from a CDN or your own static host, then call `Talaria.init`:
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/@newtalaria/browser/dist/talaria.browser.iife.js"></script>
+<script>
+  Talaria.init({
+    dsn: 'https://api.newtalaria.com',
+    apiKey: 'tal_live_…',
+    environment: 'production',
+    minLevel: 'warning',
+  });
+</script>
 ```
 
-## Quick start
+Pin a version in production (for example `@newtalaria/browser@0.1.21`) instead of floating on `latest`.
+
+## Initialize (best practices)
+
+Create a client key under **Project settings → Client keys** (`tal_live_…`). Use your project’s API base URL as `dsn` (Talaria Cloud: `https://api.newtalaria.com`).
 
 ```ts
 import { Talaria } from '@newtalaria/browser';
 
 Talaria.init({
-  // Serverpod base URL (no trailing path)
-  dsn: 'http://localhost:8080',
-  apiKey: 'tal_live_…', // public client key from Project settings → Client keys
-  environment: 'development',
-  release: '1.0.0',
-  // Continuous session upload (0–1). Default 0 = buffer only until an error.
-  replaysSessionSampleRate: 0,
-  // On error, promote the ~60s ring buffer (0–1). Default 1.
-  replaysOnErrorSampleRate: 1,
-  // Post-error upload window. Default 15000 (cheap clip). Use 0 to continue
-  // until the 5-minute max duration (Sentry-like, more expensive).
-  replaysErrorAfterMs: 15_000,
-  maskAllInputs: true, // default
-  // Embed same-origin CSS into the snapshot (needed for auth-gated UIs like CMS).
-  // Default false — player re-fetches public stylesheet hrefs instead.
-  // inlineStylesheet: true,
+  dsn: 'https://api.newtalaria.com',
+  apiKey: 'tal_live_…',
+  environment: 'production', // staging | development also accepted
+  release: '1.4.2',          // deploy / git SHA — first-class field, not a tag
+  minLevel: 'warning',       // production: drop info/debug noise
+  tags: {
+    service: 'storefront',
+    platform: 'web',
+  },
+  // Cheapest useful replay profile (also the defaults):
+  replaysSessionSampleRate: 0,   // no continuous upload
+  replaysOnErrorSampleRate: 1,   // clip around errors
+  replaysErrorAfterMs: 15_000,   // ~15s after the error
+  maskAllInputs: true,
 });
-
-try {
-  throw new Error('Something broke');
-} catch (error) {
-  await Talaria.captureException(error);
-}
-
-await Talaria.captureMessage('Checkout opened', 'info');
-console.log('replay', Talaria.getReplayId());
-
-await Talaria.flush();
-await Talaria.close();
 ```
 
-`Talaria.init` also installs `window.onerror` / `unhandledrejection` handlers unless you pass `disableDefaultIntegrations: true`. Opaque cross-origin `"Script error."` events (no usable `Error` object) are ignored by default. Errors from browser extensions (`chrome-extension://`, `moz-extension://`, etc.) are also ignored.
+**Recommendations**
 
-Every ingested event includes browser runtime tags (`browser.name`, `browser.version`, `os.name`, `os.version`, `device`) and `extra.browser` / `extra.sdk` for triage.
+| Concern | Production default |
+| --- | --- |
+| Log volume | `minLevel: 'warning'` (use `'info'` / `'debug'` only when you intentionally want noisier capture) |
+| Replay cost | Keep `replaysSessionSampleRate` low or `0`; rely on on-error clips |
+| Identity | Set `userId` when you know the signed-in user |
+| Product dims | Put stable filters in init `tags` (`service`, `platform`) |
+| Privacy | Leave `maskAllInputs: true`; mark sensitive DOM with `data-talaria-mask` |
 
-Optional init `tags` are merged into every captured event (per-call tags win on key conflict).
+`Talaria.init` installs `window.onerror` / `unhandledrejection` handlers unless you pass `disableDefaultIntegrations: true`. Opaque cross-origin `"Script error."` events and browser-extension noise are ignored by default.
 
-### Tags (low-cardinality dimensions)
+`environment` must resolve to `production` | `staging` | `development`. Common aliases work (`prod` / `live` → `production`, `test` / `uat` → `staging`, `dev` / `local` → `development`). Invalid values throw at `init`.
 
-Use **tags** for dimensions you will filter/group on (`feature`, `operation`, `service`, …). Put diagnostic fields (`business_id`, request payloads) in `extra` / capture context — not tags.
+## Logging
+
+Prefer a scoped logger for application code. Level methods wrap `captureMessage`; use `captureException` for throwables.
+
+```ts
+const logger = Talaria.logger({
+  tags: { feature: 'checkout', operation: 'pay' },
+});
+
+await logger.info('Checkout opened');           // filtered if minLevel is warning
+await logger.warn('Payment method missing');
+
+try {
+  await charge();
+} catch (error) {
+  await logger.captureException(error, {
+    tags: { component: 'stripe' },
+    extra: { cart_id: 'abc123' },
+  });
+  throw error;
+}
+```
+
+| Method | Severity sent |
+| --- | --- |
+| `debug` / `info` / `warning` / `error` / `fatal` | same name |
+| `warn` | `warning` |
+| `log(level, message, context?)` | `level` |
+| `captureException(error, context?)` | `error` |
+
+Also available on the root `Talaria` facade (`Talaria.warn(…)`, etc.).  
+`Talaria.withTags({ … })` is shorthand for `Talaria.logger({ tags: { … } })`.  
+Low-level `captureMessage(message, level?, context?)` remains supported.
+
+### Filtering
+
+Gates run in order. Filtered calls still resolve successfully (no throw).
+
+1. **`minLevel`** (default `'debug'`) — drop below this severity. Applies to messages, `captureException` (as `'error'`), and automatic integrations.
+2. **`sampleRate`** (default `1`) — fraction of eligible events to send. Independent of replay sample rates.
+3. **`beforeSend(event, hint)`** — return `null` to drop, or a mutated event. Not called when earlier gates already dropped the capture.
+
+Scoped loggers can only **raise** the floor:
+
+```ts
+const payments = logger.child({
+  tags: { component: 'payments' },
+  minLevel: 'error', // cannot weaken a stricter global minLevel
+});
+
+if (logger.isLevelEnabled('info')) {
+  // build expensive context only when it would send
+}
+```
+
+Browser `console.*` hooks add **replay breadcrumbs only**. They are not gated by `minLevel` and do not create Talaria events.
+
+## Good patterns
+
+### Feature-scoped logger per flow
+
+```ts
+function createCheckoutLogger(step: string) {
+  return Talaria.logger({
+    tags: { feature: 'checkout', operation: step },
+  });
+}
+
+const logger = createCheckoutLogger('review');
+await logger.warn('Address validation failed', {
+  extra: { field: 'postcode' },
+});
+```
+
+### Tags vs `extra`
+
+| Use | For | Examples |
+| --- | --- | --- |
+| **tags** | Low-cardinality dimensions you filter/group on | `feature`, `operation`, `component`, `service` |
+| **extra** | High-cardinality diagnostics | `cart_id`, payloads, counts, free-form detail |
+
+```ts
+await logger.error('Charge declined', {
+  tags: { component: 'stripe', operation: 'charge' },
+  extra: { cart_id: 'cart_01H…', decline_code: 'insufficient_funds' },
+});
+```
+
+### Child logger that only sends errors
+
+```ts
+const analytics = Talaria.logger({ tags: { feature: 'analytics' } }).withMinLevel(
+  'error',
+);
+await analytics.info('page_view'); // no-op when floor is error
+await analytics.captureException(err);
+```
+
+### Redact before send
 
 ```ts
 Talaria.init({
-  dsn: '…',
-  apiKey: '…',
+  dsn: 'https://api.newtalaria.com',
+  apiKey: 'tal_live_…',
   environment: 'production',
-  tags: { service: 'admin-web', platform: 'web' },
-});
-
-const checkout = Talaria.withTags({
-  feature: 'checkout',
-  operation: 'pay',
-});
-await checkout.captureMessage('Payment started', 'info');
-await checkout.captureException(err, {
-  tags: { component: 'stripe' }, // merges on top of withTags
-  extra: { cart_id: 'abc123' },  // high-cardinality → extra
+  minLevel: 'warning',
+  beforeSend(event) {
+    if (event.message.toLowerCase().includes('password')) return null;
+    if (event.extra && 'rawCard' in event.extra) {
+      const { rawCard: _, ...extra } = event.extra;
+      return { ...event, extra };
+    }
+    return event;
+  },
 });
 ```
 
-**Merge order (later wins):** automatic browser tags → init `tags` → `withTags` scope → per-call `context.tags`.
+### Severity guidance
 
-**Limits:** max 20 tags, key ≤64 (`[a-z0-9_.-]`), value ≤128, ~2KB total. Invalid keys are dropped. In non-production, high-cardinality-looking keys/values log a console warning.
+- **`warn` / `error` / `fatal`** — user-impacting or actionable problems (default production traffic when `minLevel: 'warning'`).
+- **`info`** — intentional product signals (funnel steps, “empty state”) when you lower `minLevel` or run in staging.
+- **`debug`** — local diagnosis only; leave filtered out in production.
 
-Do **not** put `environment` / `release` in tags — use the first-class init fields.
+## Tags
 
-`environment` must resolve to a wire value: `production` | `staging` | `development`. Common aliases are accepted (`test`/`uat` → `staging`, `prod`/`live` → `production`, `dev`/`local` → `development`), matching the PHP SDK. Invalid values throw at `init`. Permanent `events/ingest` 4xx responses disable further capture for that page session so misconfig cannot spin forever.
+Preferred conventions (optional, but useful in the dashboard):
 
-## Script tag (IIFE)
+`service`, `platform`, `feature`, `operation`, `component`, `runtime`, `runtime_version`
 
-For hosts without a bundler (e.g. Silverstripe `Requirements`):
+**Merge order (later wins):** automatic browser tags → init `tags` → logger / `withTags` scope → per-call `context.tags`.
 
-```html
-<script src="/path/to/talaria.browser.iife.js"></script>
-<script>
-  Talaria.init({
-    dsn: 'https://api.example.com',
-    apiKey: 'tal_live_…',
-    environment: 'production',
-    replaysSessionSampleRate: 0,
-    replaysOnErrorSampleRate: 0,
-  });
-</script>
-```
+**Limits:** max 20 tags per event, key ≤64 (`[a-z0-9_.-]`), value ≤128, ~2KB total. Invalid keys are dropped. In non-production, high-cardinality-looking keys/values log a console warning.
 
-Build output: `dist/talaria.browser.iife.js` (also produced by `npm run build` / `npm run build:iife`).
+Do **not** put `environment` or `release` in tags — use the first-class init fields. Do **not** put user ids, emails, order ids, or URLs in tags — use `userId` / `extra`.
 
-## Recommended sampling (cost)
+Every event also gets automatic browser triage tags such as `browser.name`, `os.name`, and `device`.
 
-You pay for **uploaded + retained** bytes, not for local buffering. Prefer error clips in production; keep full-session sampling low.
+## Session replay
+
+You pay for **uploaded + retained** replay data, not for local buffering. Prefer on-error clips in production.
 
 | Traffic | `replaysSessionSampleRate` | `replaysOnErrorSampleRate` | `replaysErrorAfterMs` |
 | --- | --- | --- | --- |
-| High (100k+/day) | `0.01` | `1.0` | `15000` (default clip) |
-| Medium (10k–100k/day) | `0.1` | `1.0` | `15000` |
-| Low (under 10k/day) | `0.25` | `1.0` | `15000` |
-| Marketing / docs site | `0` | `1.0` | `15000` |
-| Rich post-error context | `0` | `1.0` | `0` (continue to 5 min cap) |
+| High | `0.01` | `1.0` | `15000` (default) |
+| Medium | `0.1` | `1.0` | `15000` |
+| Low | `0.25` | `1.0` | `15000` |
+| Marketing / docs | `0` | `1.0` | `15000` |
+| Richer post-error context | `0` | `1.0` | `0` (continue until session cap) |
 
-**Defaults (`session=0`, `onError=1`, `errorAfterMs=15000`)** are the cheapest useful profile: quiet traffic costs nothing; each sampled error keeps ~60s before + ~15s after.
+**Defaults (`session=0`, `onError=1`, `errorAfterMs=15000`)** are the cheapest useful profile: quiet traffic uploads nothing; each sampled error keeps ~60s before + ~15s after.
 
-## Replay sampling behavior
-
-| Mode | Behavior |
+| Mode | What happens |
 | --- | --- |
-| Session sample hit | `replays/start` immediately; segments upload every ~5s or ~100KB until unload or **5 min** max |
-| Session sample miss | Record into a ~60s ring buffer with a FullSnapshot checkout every ~60s; nothing uploaded until an error sample hits |
-| Tab hidden → visible / bfcache restore | Take a checkout FullSnapshot (background timers are throttled; refreshes the paint base so error clips still have lead-up) |
-| Error sample + `replaysErrorAfterMs > 0` | Upload buffer (≤~960KiB gzip pack target / **1MiB** server cap) + trailing window, hard caps **12 segments** or **2MiB** compressed, attach `replayId` only if segments landed, `finish`, return to buffer mode |
-| Error sample + `replaysErrorAfterMs = 0` | Upload buffer then continue like session mode until **5 min** / unload / size caps |
-| Server limit (replay segments / total size / duration) | Stop uploading that replay; no retries |
-| Oversized FullSnapshot on segment 0 | **Abort** the clip (no blank orphan upload); error event gets `replay.capture=failed` + reason. Meta+FullSnapshot are taken/fitted **atomically** so a soft estimated take window cannot orphan the snapshot. |
-| Oversized single non-FS rrweb event | Dropped with a console warning (cannot fit under segment cap) |
-| `pagehide` / `close` | Flush pending segments with `fetch` `keepalive`, then `replays/finish`; `close` fully resets so `init()` works again (React Strict Mode) |
+| Session sample hit | Continuous upload for the page session (until unload or max duration) |
+| Session sample miss | Record into a local ring buffer; nothing uploaded until an error sample hits |
+| Error sample | Upload the buffer + a short trailing window, attach `replayId` when segments land, then return to buffer mode |
 
-### Replay capture outcome tags
+When an error clip cannot be uploaded, the error event may include:
 
-When an **error/fatal** event attempts an on-error clip (`replaysSessionSampleRate` miss), the SDK may attach:
-
-| Tag | Values |
+| Tag | Meaning |
 | --- | --- |
 | `replay.capture` | `ok` \| `failed` \| `skipped` |
-| `replay.capture_reason` | `oversized_full_snapshot` \| `no_full_snapshot` \| `upload_failed` \| `not_sampled` \| `buffer_empty` |
+| `replay.capture_reason` | Why a clip failed or was skipped (e.g. `not_sampled`, `upload_failed`) |
 
-Failed captures do **not** set `replayId` (avoids linking a blank player). Details are also under `extra.replayCapture`.
+Failed captures do **not** set `replayId` (avoids linking an empty player).
 
-When the paint base cannot ship, `extra.replayCapture` also includes size diagnostics where available:
+### Privacy
 
-| Field | Meaning |
-| --- | --- |
-| `fullSnapshotEstimatedBytes` | JSON size estimate of the FullSnapshot |
-| `fullSnapshotCompressedBytes` | Gzip size of the FullSnapshot alone (when measured) |
-| `metaEstimatedBytes` | JSON size estimate of the Meta event |
-| `maxUncompressedSegmentBytes` / `maxCompressedSegmentBytes` | Current pack caps |
+- `maskAllInputs: true` by default (password fields masked).
+- Block sensitive nodes with `data-talaria-mask` or `blockSelector`.
+- For **login-protected admin CSS**, set `inlineStylesheet: true` so same-origin styles are embedded while the user is logged in. Public sites usually leave this `false`.
 
-Use these to see how far over budget a CMS/admin snapshot was when a clip was aborted.
+## Failed HTTP / network requests
 
-## Serverpod URL pattern
-
-Talaria uses **Serverpod RPC**, not REST resource URLs:
-
-| Call | Method | URL |
-| --- | --- | --- |
-| Start replay | `POST` | `{baseUrl}/replays/start` |
-| Upload segment | `POST` | `{baseUrl}/replays/ingestSegment` |
-| Finish replay | `POST` | `{baseUrl}/replays/finish` |
-| Ingest event | `POST` | `{baseUrl}/events/ingest` |
-
-Local default: `http://localhost:8080`.
-
-Bodies are JSON with named parameters and `__className__` on typed inputs:
-
-```json
-{
-  "input": {
-    "__className__": "StartReplayInput",
-    "replayId": "…",
-    "environment": "development",
-    "sessionId": "…",
-    "url": "http://localhost:5173/"
-  }
-}
-```
-
-Auth (ingest):
-
-- `X-API-Key: tal_live_…` (preferred)
-- or `Authorization: Bearer tal_live_…`
-
-### ByteData (`gzipBytes`)
-
-Serverpod serializes `ByteData` as a wrapped base64 string:
-
-```text
-decode('<base64>', 'base64')
-```
-
-Segment payloads are a **gzip-compressed JSON array** of rrweb events.
-
-Custom rrweb events:
-
-- `talaria-console` — console level + message/args (truncated)
-- `talaria-network` — method, sanitized URL (no query by default), status, duration, failure metadata (no bodies / no auth headers)
-
-Privacy defaults: `maskAllInputs: true`, password fields masked, `[data-talaria-mask]` blocked.
-
-### Auth-gated CSS (CMS / admin)
-
-By default `inlineStylesheet` is `false`: linked stylesheets stay as `href`s and are re-fetched when you watch the replay. That works for **public** CSS, but fails for login-protected admin CSS (player has no session cookies).
-
-Set `inlineStylesheet: true` so same-origin stylesheet rules are embedded while the user is logged in. Cross-origin sheets without CORS still cannot be inlined (browser `cssRules` restriction).
-
-### Failed HTTP / network requests → events
-
-All instrumented `fetch` / XHR calls are recorded as replay breadcrumbs (`talaria-network`). **Error events are promoted only for first-party (same-origin) or explicitly allowlisted origins.**
+All instrumented `fetch` / XHR calls are recorded as replay breadcrumbs. **Error events are promoted only for first-party (same-origin) or allowlisted origins** — so analytics, ads, and widgets do not spam Issues.
 
 | Request | HTTP 5xx | Transport failure / timeout | Abort |
 | --- | --- | --- | --- |
 | Same-origin | Error event | Error event | Breadcrumb only |
-| Allowlisted third-party (`networkErrorOrigins`) | Error event | Error event | Breadcrumb only |
-| Other third-party (analytics, ads, widgets, …) | Breadcrumb only | Breadcrumb only | Breadcrumb only |
-
-This avoids Issue spam from Google Analytics, ad pixels, privacy blockers, and similar third-party noise—without a hardcoded domain denylist. Add origins you intentionally depend on (payments, CMS APIs, widgets):
-
-```ts
-networkErrorOrigins: ['https://api.stripe.com', 'https://widget.yonder.example'],
-// Escape hatch (not recommended): networkErrorOrigins: ['*']
-```
-
-**URL privacy:** network telemetry stores `origin + pathname` only (plus `hostname` / `pathname`). Query strings and fragments are stripped by default. Set `captureRequestQueryParameters: true` to keep query params after redaction of secrets **and** common tracking keys (`token`, `api_key`, `gclid`, `fbclid`, `_ga`, `cid`, `sid`, …). Bodies and auth headers are never captured.
-
-Both **`fetch`** and **`XMLHttpRequest`** are instrumented (`network.transport`: `fetch` | `xhr`). Failure kinds are only claimed when detectable:
-
-| `failure.kind` | Meaning |
-| --- | --- |
-| `http` | Completed response with a real status (e.g. 500) |
-| `network` | No usable HTTP response (status 0 / Failed to fetch) — CORS, block, DNS, offline, etc. |
-| `timeout` | `TimeoutError` or XHR `timeout` event |
-| `abort` | `AbortError` / XHR abort — recorded in breadcrumbs, **not** promoted as events |
-
-We **do not** classify status 0 as `cors` — browsers do not expose that reliably. Tags include `network.party` (`first_party` \| `third_party`).
-
-Promoted events use structured `extra` (server groups on method + host + path + kind + status) plus a first-class `exception` with synthetic type `HttpError` | `NetworkError` | `TimeoutError`:
-
-```json
-{
-  "http": {
-    "method": "POST",
-    "url": "https://app.example.com/api/orders",
-    "origin": "https://app.example.com",
-    "hostname": "app.example.com",
-    "pathname": "/api/orders",
-    "transport": "fetch"
-  },
-  "failure": { "kind": "network", "name": "TypeError", "message": "Failed to fetch" },
-  "network": { "party": "first_party", "durationMs": 842, "aborted": false, "ok": false },
-  "status_code": null
-}
-```
-
-Wire `exception` (not `extra`):
-
-```json
-{
-  "values": [
-    {
-      "type": "NetworkError",
-      "value": "Network error: GET https://app.example.com/api/orders — TypeError: Failed to fetch",
-      "mechanism": { "type": "http", "handled": true, "synthetic": true }
-    }
-  ]
-}
-```
-
-Crawler UAs are tagged (`bot=true`, `bot.name=Baiduspider`) without inventing a browser name.
+| Allowlisted (`networkErrorOrigins`) | Error event | Error event | Breadcrumb only |
+| Other third-party | Breadcrumb only | Breadcrumb only | Breadcrumb only |
 
 ```ts
 Talaria.init({
-  dsn: 'https://api.example.com',
+  dsn: 'https://api.newtalaria.com',
   apiKey: 'tal_live_…',
   environment: 'production',
-  // Default true — HTTP status promotion (first-party / allowlisted only)
+  minLevel: 'warning',
   captureFailedRequests: true,
-  // Default true — transport failures (first-party / allowlisted only)
   captureNetworkErrors: true,
-  // Extra origins to treat like first-party for promotion
   networkErrorOrigins: ['https://api.stripe.com'],
-  // Default false — do not store ?query on network URLs
-  captureRequestQueryParameters: false,
-  // Default [[500, 599]]. CMS admin often wants 4xx too:
-  failedRequestStatusCodes: [[400, 599]],
-  // Extra URL substrings to skip (Talaria /events and /replays are always skipped)
+  captureRequestQueryParameters: false, // default — strip ?query from network URLs
+  failedRequestStatusCodes: [[500, 599]], // CMS admin often uses [[400, 599]]
   failedRequestIgnoreUrls: ['/health'],
 });
 ```
 
-`AbortError` is never promoted and is ignored by the global `unhandledrejection` handler. Bare `TypeError: Failed to fetch` / `TimeoutError` rejections are correlated with recent network breadcrumbs: promoted failures and third-party noise are suppressed; first-party failures with promotion off keep the exception and merge request context.
+Query strings are stripped from network telemetry by default. Bodies and auth headers are never captured. `AbortError` is never promoted.
 
-#### Network event tags (low cardinality)
-
-| Tag | Values | Notes |
-| --- | --- | --- |
-| `http.method` | `GET`, `POST`, … | |
-| `http.status_code` | e.g. `500` | Present on HTTP promotions only |
-| `network.failure_kind` | `http` \| `network` \| `timeout` | |
-| `network.transport` | `fetch` \| `xhr` | |
-| `network.party` | `first_party` \| `third_party` | Same-origin vs cross-origin (allowlist does not change this tag) |
-| `network.error_name` | e.g. `TypeError`, `TimeoutError` | When available |
-
-Hostname, pathname, full sanitized URL, and duration live in `extra` — not tags — to avoid high-cardinality facets.
-
-#### Issue grouping (server)
-
-Promoted network events set first-class `exception.values[0].type` (`HttpError` \| `NetworkError` \| `TimeoutError`) and `extra.status_code`. The server fingerprints them on **method + hostname + pathname + failure kind + status** (not the human message), so query strings and volatile error text do not fragment Issues. See [`planning/fingerprints.md`](../../../planning/fingerprints.md) §6.4.
-
-### Exceptions and stack frames
-
-`captureException` sends:
-
-| Field | Meaning |
-| --- | --- |
-| `platform` | Always `javascript` |
-| `stackTrace` | Raw `Error.stack` string (kept for compatibility) |
-| `exception.values[0]` | `type` = `err.name`, `value` = `err.message`, parsed `stacktrace.frames` (oldest → newest), `mechanism` |
-
-Frames use wire field `functionName` (not `function`). `inApp` is **true** for same-origin frames (and `inAppOrigins` / `inAppAllowUrls`); **false** for cross-origin CDN/third-party scripts, `@newtalaria/browser`, `node_modules`, browser extensions, and `inAppDenyUrls`.
-
-Global handlers set `mechanism.type` to `onerror` / `unhandledrejection` (`handled: false`). Manual captures default to `generic` (`handled: true`). Do **not** put `exception_class`, `file`, `line`, or `code` in `extra` — those belong on the exception / frame payload.
-
-### Event timestamps
-
-| Field | Meaning |
-| --- | --- |
-| `timestamp` | **Occurrence time** on the client (when capture began — before replay flush) |
-| `createdAt` | **Ingest/storage time** on the server |
-
-If replay upload runs before event ingest, `extra.sdk.queuedMs` records how long capture waited (ms). A large `createdAt - timestamp` gap is usually flush/queue delay or clock skew — not a wrong failure classification.
-
-## Init options reference
+## Init options
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `dsn` / `baseUrl` | *(required)* | Serverpod host, e.g. `https://api.example.com` |
+| `dsn` / `baseUrl` | *(required)* | Talaria API base URL, e.g. `https://api.newtalaria.com` |
 | `apiKey` | *(required)* | Public client key (`tal_live_…`). Safe to embed; configure allowed domains in the dashboard for production. |
 | `environment` | *(required)* | `production` \| `staging` \| `development` (aliases accepted) |
 | `release` | — | Optional release string on every event |
 | `userId` | — | Optional app user id |
 | `tags` | — | Tags merged into every event |
+| `minLevel` | `'debug'` | Drop captures below this severity; use `'warning'` in production |
+| `sampleRate` | `1` | Fraction of eligible events to send (after `minLevel`) |
+| `beforeSend` | — | `(event, hint) => event \| null` — mutate or drop after gates |
 | `replaysSessionSampleRate` | `0` | Fraction of sessions that upload continuously |
 | `replaysOnErrorSampleRate` | `1` | Fraction of errors that promote the ring buffer |
-| `replaysErrorAfterMs` | `15000` | Post-error upload window; `0` = continue to 5 min cap |
-| `maskAllInputs` | `true` | rrweb input masking |
-| `inlineStylesheet` | `false` | Embed same-origin CSS (CMS/admin) |
+| `replaysErrorAfterMs` | `15000` | Post-error upload window; `0` = continue until session cap |
+| `maskAllInputs` | `true` | Mask inputs in replay |
+| `inlineStylesheet` | `false` | Embed same-origin CSS (auth-gated admin UIs) |
 | `blockSelector` | — | Extra CSS selectors blocked from the DOM snapshot |
 | `disableDefaultIntegrations` | `false` | Skip `window.onerror` / `unhandledrejection` |
-| `captureFailedRequests` | `true` | Promote HTTP status failures (**first-party / allowlisted only**) |
-| `captureNetworkErrors` | `true` | Promote transport/timeout failures (**first-party / allowlisted only**) |
-| `networkErrorOrigins` | `[]` | Extra origins eligible for promotion; same-origin always eligible; `['*']` = all (not recommended) |
+| `captureFailedRequests` | `true` | Promote HTTP status failures (first-party / allowlisted only) |
+| `captureNetworkErrors` | `true` | Promote transport/timeout failures (first-party / allowlisted only) |
+| `networkErrorOrigins` | `[]` | Extra origins eligible for promotion; `['*']` = all (not recommended) |
 | `failedRequestStatusCodes` | `[[500, 599]]` | Status codes/ranges to promote when origin is eligible |
-| `failedRequestIgnoreUrls` | `[]` | URL substrings never promoted (Talaria `/events` + `/replays` always ignored) |
-| `captureRequestQueryParameters` | `false` | Keep `?query` on network URLs after redaction (`includeNetworkUrlQuery` alias) |
-| `inAppOrigins` | `[]` | Extra origins treated as app code for stack `inApp` (exact origin strings; same-origin always included) |
-| `inAppAllowUrls` | `[]` | Path substrings or RegExps that force `inApp: true` |
-| `inAppDenyUrls` | `[]` | Path substrings or RegExps that force `inApp: false` |
+| `failedRequestIgnoreUrls` | `[]` | URL substrings never promoted |
+| `captureRequestQueryParameters` | `false` | Keep `?query` on network URLs after redaction |
+| `inAppOrigins` | `[]` | Extra origins treated as app code for stack `inApp` |
+| `inAppAllowUrls` / `inAppDenyUrls` | `[]` | Force stack frames `inApp: true` / `false` |
 
 ## Public API
 
 | API | Description |
 | --- | --- |
 | `Talaria.init(options)` | Configure + start recording + install network/console hooks |
-| `Talaria.captureException(error)` | Ingest error (+ replay link when sampled) |
-| `Talaria.captureMessage(message, level?)` | Ingest message |
+| `Talaria.logger(options?)` | Scoped logger (`tags`, `minLevel`) |
+| `Talaria.withTags(tags)` | Shorthand for `logger({ tags })` |
+| `Talaria.debug` / `info` / `warning` / `warn` / `error` / `fatal` | Level helpers |
+| `Talaria.log(level, message, context?)` | Generic level helper |
+| `Talaria.captureException(error, context?)` | Ingest error (+ replay link when sampled) |
+| `Talaria.captureMessage(message, level?, context?)` | Ingest message |
+| `Talaria.getMinLevel()` / `setMinLevel(level)` | Read/update global floor |
+| `Talaria.isLevelEnabled(level)` | Whether a level would pass the global floor |
 | `Talaria.getReplayId()` | Active upload replay id, or `null` |
-| `Talaria.flush()` | Upload buffered segments |
+| `Talaria.flush()` | Upload buffered replay segments |
 | `Talaria.close()` | Stop recording, flush, finish |
 
-## Example
+Scoped loggers also expose `child`, `withMinLevel`, `withTags`, `isLevelEnabled`, and `getMinLevel`.
 
-See [`../../examples/sdk-spa`](../../examples/sdk-spa) for a minimal page wired to `localhost:8080`.
+## Troubleshooting
 
-## Local `file:` install (marketing / monorepo)
+| Symptom | What to check |
+| --- | --- |
+| 401 / 403 | Client key (`tal_live_…`) belongs to the project; allowed domains configured for production |
+| `logger.info` never appears | `minLevel` is often `'warning'` in production — lower it or use `warn` / `error` |
+| Exceptions missing after `setMinLevel('fatal')` | `captureException` counts as `'error'` and is filtered by a `fatal` floor |
+| No replay on an error | Check `replay.capture` / `replay.capture_reason` on the event; clip may have been skipped or failed to upload |
+| Permanent ingest 4xx | Misconfigured env/auth/payload disables further capture for that page session so the SDK cannot spin forever |
 
-`dist/` is gitignored. After editing SDK `src/`, rebuild before the consumer picks up changes:
-
-```bash
-cd new_talaria_js/packages/browser
-npm run build
-# or: npm install in the consumer — `prepare` runs build for file: installs
-```
-
-Then restart the Next app with a clean cache:
-
-```bash
-cd ../new_talaria_marketing   # sibling repo
-rm -rf .next
-npm run dev
-```
-
-**Serverpod must be restarted** after changing `ReplayLimits` (compressed cap is 512KiB). A live process still on 256KiB will 400 every near-max segment.
-
-### Verify error-clip ingest
-
-1. Restart Serverpod (512KiB live).
-2. Rebuild the browser package; restart marketing with clean `.next`.
-3. Browse `/docs/**` ~30s, throw one test exception.
-4. Expect: a few `ingestSegment` 200s, one `finish`, **zero** compressed-size 400 spam, dashboard replay plays.
-5. Throw again later: a new bounded clip is allowed (buffer mode reset).
+More guides: [www.newtalaria.com/docs](https://www.newtalaria.com/docs)

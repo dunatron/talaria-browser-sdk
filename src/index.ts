@@ -1,6 +1,7 @@
 import { TalariaClient } from './client.js';
 import type {
   CaptureContext,
+  LoggerOptions,
   SeverityLevel,
   TalariaInitOptions,
 } from './types.js';
@@ -8,25 +9,23 @@ import type {
 const client = new TalariaClient();
 
 /**
- * Talaria browser SDK — error capture + session replay.
+ * Talaria browser SDK — error capture, logging, and session replay.
  *
  * ```ts
  * import { Talaria } from '@newtalaria/browser';
  *
  * Talaria.init({
- *   dsn: 'http://localhost:8080',
+ *   dsn: 'https://api.newtalaria.com',
  *   apiKey: 'tal_live_…',
- *   environment: 'development',
+ *   environment: 'production',
+ *   minLevel: 'warning',
  *   replaysOnErrorSampleRate: 1,
- *   // Default 15s post-error clip; set 0 to continue until 5 min cap.
  *   replaysErrorAfterMs: 15_000,
  * });
  *
- * try {
- *   throw new Error('boom');
- * } catch (e) {
- *   await Talaria.captureException(e);
- * }
+ * const logger = Talaria.logger({ tags: { feature: 'checkout' } });
+ * await logger.warn('Payment method missing');
+ * await logger.captureException(err);
  * ```
  */
 export const Talaria = {
@@ -46,8 +45,56 @@ export const Talaria = {
     return client.captureMessage(message, level, context);
   },
 
+  debug(message: string, context?: CaptureContext): Promise<void> {
+    return client.debug(message, context);
+  },
+
+  info(message: string, context?: CaptureContext): Promise<void> {
+    return client.info(message, context);
+  },
+
+  warning(message: string, context?: CaptureContext): Promise<void> {
+    return client.warning(message, context);
+  },
+
+  warn(message: string, context?: CaptureContext): Promise<void> {
+    return client.warn(message, context);
+  },
+
+  error(message: string, context?: CaptureContext): Promise<void> {
+    return client.error(message, context);
+  },
+
+  fatal(message: string, context?: CaptureContext): Promise<void> {
+    return client.fatal(message, context);
+  },
+
+  log(
+    level: SeverityLevel,
+    message: string,
+    context?: CaptureContext,
+  ): Promise<void> {
+    return client.log(level, message, context);
+  },
+
+  logger(options?: LoggerOptions) {
+    return client.logger(options);
+  },
+
   withTags(tags: Record<string, string>) {
     return client.withTags(tags);
+  },
+
+  getMinLevel(): SeverityLevel {
+    return client.getMinLevel();
+  },
+
+  setMinLevel(level: SeverityLevel): void {
+    client.setMinLevel(level);
+  },
+
+  isLevelEnabled(level: SeverityLevel): boolean {
+    return client.isLevelEnabled(level);
   },
 
   getReplayId(): string | null {
@@ -64,12 +111,18 @@ export const Talaria = {
 };
 
 export { TalariaClient } from './client.js';
-export type { ScopedTalaria } from './client.js';
+export type { ScopedTalaria, TalariaLogger } from './client.js';
 export {
   mergeTags,
   normalizeTags,
   RESERVED_TAG_KEYS,
 } from './utils/tags.js';
+export {
+  SEVERITY_ORDER,
+  maxSeverity,
+  normalizeSeverity,
+  severityAtLeast,
+} from './utils/severity.js';
 export {
   computeErrorClipDeadlineMs,
   fitCompressedPrefix,
@@ -84,6 +137,8 @@ export {
 } from './replay/segment_buffer.js';
 
 export type {
+  BeforeSendEvent,
+  BeforeSendHint,
   CaptureContext,
   DebugImage,
   DebugMeta,
@@ -92,6 +147,7 @@ export type {
   ExceptionMechanism,
   ExceptionValue,
   FailedRequestStatusCode,
+  LoggerOptions,
   SeverityLevel,
   StackFrame,
   StackTrace,

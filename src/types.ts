@@ -7,9 +7,42 @@ export type Environment = 'production' | 'staging' | 'development';
 /** Single status or inclusive [min, max] range. */
 export type FailedRequestStatusCode = number | [number, number];
 
+/** Options for {@link ScopedTalaria} / `Talaria.logger`. */
+export interface LoggerOptions {
+  tags?: Record<string, string>;
+  /**
+   * Local minimum severity. Combined with the global init `minLevel` as the
+   * stricter (higher) floor — children can raise the floor, never lower it.
+   */
+  minLevel?: SeverityLevel;
+}
+
+/**
+ * Mutable event snapshot passed to {@link TalariaInitOptions.beforeSend}.
+ * Return `null` to drop; otherwise return the (possibly mutated) event.
+ */
+export interface BeforeSendEvent {
+  message: string;
+  level: SeverityLevel;
+  eventType: 'error' | 'warning' | 'info' | 'debug';
+  title?: string;
+  tags?: Record<string, string>;
+  extra?: Record<string, unknown>;
+  userId?: string;
+  exception?: ExceptionData;
+}
+
+/** Hint bag for {@link TalariaInitOptions.beforeSend}. */
+export interface BeforeSendHint {
+  /** Original capture context after scope tag merge (when applicable). */
+  originalContext?: CaptureContext;
+  /** True when this capture originated from `captureException`. */
+  isException: boolean;
+}
+
 export interface TalariaInitOptions {
   /**
-   * Serverpod host, e.g. `http://localhost:8080` or `https://ingest.example.com`.
+   * Talaria API base URL, e.g. `https://api.newtalaria.com`.
    * Alias of `baseUrl`.
    */
   dsn?: string;
@@ -19,6 +52,24 @@ export interface TalariaInitOptions {
   apiKey: string;
   environment: Environment | string;
   release?: string;
+  /**
+   * Drop captures below this severity. Default `'debug'` (nothing filtered).
+   * Production recommendation: `'warning'`.
+   */
+  minLevel?: SeverityLevel;
+  /**
+   * Fraction of eligible events to send (0–1). Default `1`.
+   * Applied after `minLevel`, before `beforeSend`. Independent of replay sample rates.
+   */
+  sampleRate?: number;
+  /**
+   * Return `null` to drop; otherwise return the (possibly mutated) event.
+   * Runs after `minLevel` and `sampleRate` gates.
+   */
+  beforeSend?: (
+    event: BeforeSendEvent,
+    hint: BeforeSendHint,
+  ) => BeforeSendEvent | null;
   /** Fraction of sessions that upload continuously (0–1). Default `0`. */
   replaysSessionSampleRate?: number;
   /**
@@ -202,6 +253,12 @@ export interface ResolvedOptions {
   /** Wire enum value after alias normalization (`test` → `staging`, etc.). */
   environment: Environment;
   release?: string;
+  minLevel: SeverityLevel;
+  sampleRate: number;
+  beforeSend?: (
+    event: BeforeSendEvent,
+    hint: BeforeSendHint,
+  ) => BeforeSendEvent | null;
   replaysSessionSampleRate: number;
   replaysOnErrorSampleRate: number;
   replaysErrorAfterMs: number;
