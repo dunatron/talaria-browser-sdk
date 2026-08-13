@@ -7,14 +7,21 @@ export type Environment = 'production' | 'staging' | 'development';
 /** Single status or inclusive [min, max] range. */
 export type FailedRequestStatusCode = number | [number, number];
 
-/** Options for {@link ScopedTalaria} / `Talaria.logger`. */
-export interface LoggerOptions {
+/** Named logger preset from init `loggers`. */
+export interface LoggerPreset {
   tags?: Record<string, string>;
   /**
-   * Local minimum severity. Combined with the global init `minLevel` as the
-   * stricter (higher) floor — children can raise the floor, never lower it.
+   * Assigned minimum severity for this named logger.
+   * Replaces the client default when set (may be higher or lower unless
+   * `enforceDefaultLevel` is true).
    */
   minLevel?: SeverityLevel;
+}
+
+/** Options for {@link ScopedTalaria} / `Talaria.logger`. */
+export interface LoggerOptions extends LoggerPreset {
+  /** Look up a named preset from init `loggers` and merge with these options. */
+  name?: string;
 }
 
 /**
@@ -53,10 +60,26 @@ export interface TalariaInitOptions {
   environment: Environment | string;
   release?: string;
   /**
-   * Drop captures below this severity. Default `'debug'` (nothing filtered).
-   * Production recommendation: `'warning'`.
+   * Git commit SHA for the deployed build (full or abbreviated).
+   * Prefer pairing with `release` and a Talaria `createRelease` call in CI.
+   */
+  commitSha?: string;
+  /**
+   * Default / root minimum severity for unset scopes and direct client captures.
+   * Default `'debug'` (nothing filtered). Production recommendation: `'warning'`.
+   * When `enforceDefaultLevel` is false, scoped loggers may override below this.
    */
   minLevel?: SeverityLevel;
+  /**
+   * When true, scoped loggers cannot log below `minLevel` (legacy hard floor).
+   * Default `false` — Logback/MEL-style overrides allowed.
+   */
+  enforceDefaultLevel?: boolean;
+  /**
+   * Named logger presets for `Talaria.logger('name')` /
+   * `Talaria.logger({ name, ... })`.
+   */
+  loggers?: Record<string, LoggerPreset>;
   /**
    * Fraction of eligible events to send (0–1). Default `1`.
    * Applied after `minLevel`, before `beforeSend`. Independent of replay sample rates.
@@ -253,7 +276,10 @@ export interface ResolvedOptions {
   /** Wire enum value after alias normalization (`test` → `staging`, etc.). */
   environment: Environment;
   release?: string;
+  commitSha?: string;
   minLevel: SeverityLevel;
+  enforceDefaultLevel: boolean;
+  loggers: Record<string, LoggerPreset>;
   sampleRate: number;
   beforeSend?: (
     event: BeforeSendEvent,

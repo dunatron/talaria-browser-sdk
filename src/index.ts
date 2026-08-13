@@ -77,7 +77,7 @@ export const Talaria = {
     return client.log(level, message, context);
   },
 
-  logger(options?: LoggerOptions) {
+  logger(options?: string | LoggerOptions) {
     return client.logger(options);
   },
 
@@ -91,6 +91,14 @@ export const Talaria = {
 
   setMinLevel(level: SeverityLevel): void {
     client.setMinLevel(level);
+  },
+
+  isEnforceDefaultLevel(): boolean {
+    return client.isEnforceDefaultLevel();
+  },
+
+  setEnforceDefaultLevel(enforce: boolean): void {
+    client.setEnforceDefaultLevel(enforce);
   },
 
   isLevelEnabled(level: SeverityLevel): boolean {
@@ -148,6 +156,7 @@ export type {
   ExceptionValue,
   FailedRequestStatusCode,
   LoggerOptions,
+  LoggerPreset,
   SeverityLevel,
   StackFrame,
   StackTrace,

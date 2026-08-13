@@ -137,7 +137,7 @@ describe('logger API', () => {
     }
   });
 
-  it('scoped child can only raise the minLevel floor', async () => {
+  it('scoped child inherits and can override minLevel', async () => {
     const { bodies, restore } = installFetchCapture();
     try {
       const client = initClient({ minLevel: 'warning' });
@@ -150,21 +150,107 @@ describe('logger API', () => {
       assert.equal(raised.getMinLevel(), 'error');
       assert.equal(raised.isLevelEnabled('warning'), false);
 
+      // Assign replaces parent — child may lower after a raise.
       const weakened = raised.child({ minLevel: 'debug' });
-      assert.equal(weakened.getMinLevel(), 'error');
+      assert.equal(weakened.getMinLevel(), 'debug');
 
       await logger.info('nope');
       await logger.warning('warn-ok');
       await raised.warning('nope2');
       await raised.error('err-ok', { tags: { component: 'x' } });
+      await weakened.info('info-from-weakened');
       await client.close();
 
       const messages = bodies.map((b) => b.input?.message);
-      assert.deepEqual(messages, ['warn-ok', 'err-ok']);
+      assert.deepEqual(messages, ['warn-ok', 'err-ok', 'info-from-weakened']);
 
       const errTags = bodies[1]!.input?.tags as Record<string, string>;
       assert.equal(errTags.feature, 'blog');
       assert.equal(errTags.component, 'x');
+    } finally {
+      restore();
+    }
+  });
+
+  it('scoped logger can lower below client default', async () => {
+    const { bodies, restore } = installFetchCapture();
+    try {
+      const client = initClient({
+        minLevel: 'warning',
+        enforceDefaultLevel: false,
+      });
+      const verbose = client.logger({
+        minLevel: 'info',
+        tags: { area: 'businessDirectory' },
+      });
+      assert.equal(verbose.getMinLevel(), 'info');
+      assert.equal(verbose.isLevelEnabled('info'), true);
+
+      await verbose.info('bd-info');
+      await client.info('direct-dropped');
+      await client.close();
+
+      const messages = bodies.map((b) => b.input?.message);
+      assert.deepEqual(messages, ['bd-info']);
+      const tags = bodies[0]!.input?.tags as Record<string, string>;
+      assert.equal(tags.area, 'businessDirectory');
+    } finally {
+      restore();
+    }
+  });
+
+  it('enforceDefaultLevel restores hard floor', async () => {
+    const { bodies, restore } = installFetchCapture();
+    try {
+      const client = initClient({
+        minLevel: 'warning',
+        enforceDefaultLevel: true,
+      });
+      const verbose = client.logger({ minLevel: 'info' });
+      assert.equal(verbose.getMinLevel(), 'warning');
+      assert.equal(verbose.isLevelEnabled('info'), false);
+
+      await verbose.info('dropped');
+      await verbose.warning('kept');
+      await client.close();
+
+      assert.deepEqual(
+        bodies.map((b) => b.input?.message),
+        ['kept'],
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it('named logger presets', async () => {
+    const { bodies, restore } = installFetchCapture();
+    try {
+      const client = initClient({
+        minLevel: 'warning',
+        loggers: {
+          businessDirectory: {
+            minLevel: 'info',
+            tags: { area: 'businessDirectory' },
+          },
+        },
+      });
+
+      const byName = client.logger('businessDirectory');
+      assert.equal(byName.getMinLevel(), 'info');
+
+      const merged = client.logger({
+        name: 'businessDirectory',
+        tags: { request: 'x' },
+      });
+      await merged.info('named-info');
+      await client.close();
+
+      assert.equal(bodies.length, 1);
+      assert.equal(bodies[0]!.input?.message, 'named-info');
+      const tags = bodies[0]!.input?.tags as Record<string, string>;
+      assert.equal(tags.area, 'businessDirectory');
+      assert.equal(tags.request, 'x');
     } finally {
       restore();
     }

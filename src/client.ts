@@ -4,6 +4,7 @@ import type {
   ExceptionData,
   ExceptionMechanism,
   LoggerOptions,
+  LoggerPreset,
   ResolvedOptions,
   SeverityLevel,
   TalariaInitOptions,
@@ -258,6 +259,26 @@ function mergeNetworkFailureContext(
   };
 }
 
+function normalizeLoggerPresets(
+  loggers?: Record<string, LoggerPreset>,
+): Record<string, LoggerPreset> {
+  if (!loggers || typeof loggers !== 'object') return {};
+  const out: Record<string, LoggerPreset> = {};
+  for (const [name, preset] of Object.entries(loggers)) {
+    if (!name || !preset || typeof preset !== 'object') continue;
+    const entry: LoggerPreset = {};
+    if (preset.minLevel !== undefined) {
+      const level = normalizeSeverity(String(preset.minLevel));
+      if (level) entry.minLevel = level;
+    }
+    if (preset.tags) {
+      entry.tags = mergeTags(preset.tags);
+    }
+    out[name] = entry;
+  }
+  return out;
+}
+
 function resolveOptions(options: TalariaInitOptions): ResolvedOptions {
   const baseUrl = (options.baseUrl ?? options.dsn ?? '').trim();
   if (!baseUrl) {
@@ -275,8 +296,11 @@ function resolveOptions(options: TalariaInitOptions): ResolvedOptions {
     apiKey: options.apiKey.trim(),
     environment: normalizeEnvironment(String(options.environment)),
     release: options.release,
+    commitSha: options.commitSha?.trim() || undefined,
     minLevel:
       normalizeSeverity(String(options.minLevel ?? 'debug')) ?? 'debug',
+    enforceDefaultLevel: Boolean(options.enforceDefaultLevel),
+    loggers: normalizeLoggerPresets(options.loggers),
     sampleRate: clamp01(options.sampleRate ?? 1),
     beforeSend: options.beforeSend,
     replaysSessionSampleRate: clamp01(options.replaysSessionSampleRate ?? 0),
@@ -567,6 +591,30 @@ export class TalariaClient {
     error: unknown,
     context?: CaptureContext,
   ): Promise<void> {
+    return this.captureExceptionInternal(error, context, true);
+  }
+
+  /**
+   * Logger-originated exception capture. Applies client `minLevel` only when
+   * `enforceDefaultLevel` is true.
+   * @internal
+   */
+  async captureExceptionFromLogger(
+    error: unknown,
+    context?: CaptureContext,
+  ): Promise<void> {
+    return this.captureExceptionInternal(
+      error,
+      context,
+      this.options?.enforceDefaultLevel ?? false,
+    );
+  }
+
+  private async captureExceptionInternal(
+    error: unknown,
+    context: CaptureContext | undefined,
+    respectMinLevel: boolean,
+  ): Promise<void> {
     if (this.capturing || this.ingestDisabled) return;
 
     const err =
@@ -617,6 +665,7 @@ export class TalariaClient {
         ),
         platform: PLATFORM_JAVASCRIPT,
         context: mergedContext,
+        respectMinLevel,
       });
     } finally {
       this.capturing = false;
@@ -628,12 +677,40 @@ export class TalariaClient {
     level: SeverityLevel = 'info',
     context?: CaptureContext,
   ): Promise<void> {
+    return this.captureMessageInternal(message, level, context, true);
+  }
+
+  /**
+   * Logger-originated message capture. Applies client `minLevel` only when
+   * `enforceDefaultLevel` is true.
+   * @internal
+   */
+  async captureMessageFromLogger(
+    message: string,
+    level: SeverityLevel = 'info',
+    context?: CaptureContext,
+  ): Promise<void> {
+    return this.captureMessageInternal(
+      message,
+      level,
+      context,
+      this.options?.enforceDefaultLevel ?? false,
+    );
+  }
+
+  private async captureMessageInternal(
+    message: string,
+    level: SeverityLevel,
+    context: CaptureContext | undefined,
+    respectMinLevel: boolean,
+  ): Promise<void> {
     if (this.ingestDisabled) return;
     await this.capture({
       message,
       level,
       title: context?.title,
       context,
+      respectMinLevel,
     });
   }
 
@@ -680,21 +757,49 @@ export class TalariaClient {
       normalizeSeverity(String(level)) ?? this.options.minLevel;
   }
 
+  isEnforceDefaultLevel(): boolean {
+    return this.options?.enforceDefaultLevel ?? false;
+  }
+
+  setEnforceDefaultLevel(enforce: boolean): void {
+    if (!this.options) return;
+    this.options.enforceDefaultLevel = enforce;
+  }
+
   isLevelEnabled(level: SeverityLevel): boolean {
     return severityAtLeast(level, this.getMinLevel());
   }
 
   /**
    * Returns a scoped logger that merges tags / minLevel into every capture.
-   * Nested `child` / `withTags` merge further (later tag keys win; minLevel
-   * can only raise the floor).
+   * Nested `child` / `withTags` merge further (later tag keys win).
+   * Assigned `minLevel` replaces the default (may raise or lower) unless
+   * `enforceDefaultLevel` is true.
    */
-  logger(options?: LoggerOptions): ScopedTalaria {
-    return createScopedTalaria(
-      this,
-      mergeTags(options?.tags),
-      options?.minLevel,
-    );
+  logger(options?: string | LoggerOptions): ScopedTalaria {
+    const resolved = this.resolveLoggerOptions(options);
+    return createScopedTalaria(this, mergeTags(resolved.tags), resolved.minLevel);
+  }
+
+  /** Resolve named presets + call-site options for {@link logger}. */
+  resolveLoggerOptions(
+    options?: string | LoggerOptions,
+  ): { tags?: Record<string, string>; minLevel?: SeverityLevel } {
+    const loggers = this.options?.loggers ?? {};
+    if (typeof options === 'string') {
+      const preset = loggers[options] ?? {};
+      return {
+        tags: preset.tags,
+        minLevel: preset.minLevel,
+      };
+    }
+    const name = options?.name;
+    const preset = name ? (loggers[name] ?? {}) : {};
+    return {
+      tags: mergeTags(preset.tags, options?.tags),
+      minLevel:
+        options?.minLevel !== undefined ? options.minLevel : preset.minLevel,
+    };
   }
 
   /**
@@ -843,6 +948,8 @@ export class TalariaClient {
     platform?: string;
     context?: CaptureContext;
     keepalive?: boolean;
+    /** When false, skip client minLevel gate (scoped logger already filtered). Default true. */
+    respectMinLevel?: boolean;
   }): Promise<void> {
     if (!this.options || !this.transport) {
       throw new Error('@newtalaria/browser: call Talaria.init() first');
@@ -850,7 +957,13 @@ export class TalariaClient {
     if (this.ingestDisabled) return;
 
     // Cheap gates before replay work / beforeSend.
-    if (!severityAtLeast(args.level, this.options.minLevel)) return;
+    const respectMinLevel = args.respectMinLevel !== false;
+    if (
+      respectMinLevel &&
+      !severityAtLeast(args.level, this.options.minLevel)
+    ) {
+      return;
+    }
     if (Math.random() >= this.options.sampleRate) return;
 
     let message = args.message;
@@ -1018,6 +1131,7 @@ export class TalariaClient {
         exception,
         platform: args.platform,
         release: this.options.release,
+        commitSha: this.options.commitSha,
         userId,
         sessionId: this.sessionId ?? undefined,
         replayId: replayId ?? undefined,
@@ -1801,7 +1915,8 @@ export class TalariaClient {
 
 /**
  * Scoped logger / capture surface from `Talaria.logger` / `withTags`.
- * Inherits tags and an optional minLevel floor (children can only raise it).
+ * Inherits tags and an optional assigned minLevel (may raise or lower vs default
+ * unless `enforceDefaultLevel` is true).
  */
 export interface ScopedTalaria {
   debug(message: string, context?: CaptureContext): Promise<void>;
@@ -1837,10 +1952,13 @@ function createScopedTalaria(
   scopeTags: TagMap,
   scopeMinLevel?: SeverityLevel,
 ): ScopedTalaria {
-  const effectiveMin = (): SeverityLevel =>
-    scopeMinLevel
-      ? maxSeverity(client.getMinLevel(), scopeMinLevel)
-      : client.getMinLevel();
+  const effectiveMin = (): SeverityLevel => {
+    const assigned = scopeMinLevel ?? client.getMinLevel();
+    if (client.isEnforceDefaultLevel()) {
+      return maxSeverity(client.getMinLevel(), assigned);
+    }
+    return assigned;
+  };
 
   const mergeContext = (context?: CaptureContext): CaptureContext => ({
     ...context,
@@ -1853,7 +1971,11 @@ function createScopedTalaria(
     context?: CaptureContext,
   ): Promise<void> => {
     if (!severityAtLeast(level, effectiveMin())) return Promise.resolve();
-    return client.captureMessage(message, level, mergeContext(context));
+    return client.captureMessageFromLogger(
+      message,
+      level,
+      mergeContext(context),
+    );
   };
 
   const log = (
@@ -1862,9 +1984,10 @@ function createScopedTalaria(
     context?: CaptureContext,
   ): Promise<void> => captureMessage(message, level, context);
 
-  const raiseScopeMin = (next?: SeverityLevel): SeverityLevel | undefined => {
+  /** Assign (replace) scope minLevel — Logback-style, not max-with-parent. */
+  const assignScopeMin = (next?: SeverityLevel): SeverityLevel | undefined => {
     if (next === undefined) return scopeMinLevel;
-    return scopeMinLevel ? maxSeverity(scopeMinLevel, next) : next;
+    return next;
   };
 
   return {
@@ -1889,7 +2012,7 @@ function createScopedTalaria(
     log,
     captureException(error, context) {
       if (!severityAtLeast('error', effectiveMin())) return Promise.resolve();
-      return client.captureException(error, mergeContext(context));
+      return client.captureExceptionFromLogger(error, mergeContext(context));
     },
     captureMessage,
     withTags(tags) {
@@ -1900,13 +2023,15 @@ function createScopedTalaria(
       );
     },
     withMinLevel(minLevel) {
-      return createScopedTalaria(client, scopeTags, raiseScopeMin(minLevel));
+      return createScopedTalaria(client, scopeTags, assignScopeMin(minLevel));
     },
     child(options) {
       return createScopedTalaria(
         client,
         mergeTags(scopeTags, options.tags),
-        raiseScopeMin(options.minLevel),
+        options.minLevel !== undefined
+          ? assignScopeMin(options.minLevel)
+          : scopeMinLevel,
       );
     },
     isLevelEnabled(level) {

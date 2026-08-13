@@ -39,7 +39,8 @@ Talaria.init({
   dsn: 'https://api.newtalaria.com',
   apiKey: 'tal_live_…',
   environment: 'production', // staging | development also accepted
-  release: '1.4.2',          // deploy / git SHA — first-class field, not a tag
+  release: '1.4.2',          // deploy version — first-class field, not a tag
+  commitSha: process.env.TALARIA_COMMIT_SHA, // optional; enables GitHub source
   minLevel: 'warning',       // production: drop info/debug noise
   tags: {
     service: 'storefront',
@@ -105,16 +106,32 @@ Low-level `captureMessage(message, level?, context?)` remains supported.
 
 Gates run in order. Filtered calls still resolve successfully (no throw).
 
-1. **`minLevel`** (default `'debug'`) — drop below this severity. Applies to messages, `captureException` (as `'error'`), and automatic integrations.
+1. **`minLevel`** (default `'debug'`) — **default/root** severity. Direct client captures and unset scopes use this. Scoped loggers may override below it unless `enforceDefaultLevel` is true.
 2. **`sampleRate`** (default `1`) — fraction of eligible events to send. Independent of replay sample rates.
 3. **`beforeSend(event, hint)`** — return `null` to drop, or a mutated event. Not called when earlier gates already dropped the capture.
 
-Scoped loggers can only **raise** the floor:
+Scoped loggers **inherit** the client default and can assign a higher or lower floor (Logback-style). PHP docs (same contract): [logging-levels.md](https://github.com/dunatron/talaria-php-sdk/blob/main/docs/logging-levels.md) in the PHP SDK.
 
 ```ts
+// warning globally, info for one area
+Talaria.init({
+  /* … */
+  minLevel: 'warning',
+  enforceDefaultLevel: false,
+  loggers: {
+    businessDirectory: {
+      minLevel: 'info',
+      tags: { area: 'businessDirectory' },
+    },
+  },
+});
+
+const directory = Talaria.logger('businessDirectory');
+await directory.info('Listing loaded'); // sent
+
 const payments = logger.child({
   tags: { component: 'payments' },
-  minLevel: 'error', // cannot weaken a stricter global minLevel
+  minLevel: 'error', // quieter than default
 });
 
 if (logger.isLevelEnabled('info')) {
@@ -274,10 +291,13 @@ Query strings are stripped from network telemetry by default. Bodies and auth he
 | `apiKey` | *(required)* | Public client key (`tal_live_…`). Safe to embed; configure allowed domains in the dashboard for production. |
 | `environment` | *(required)* | `production` \| `staging` \| `development` (aliases accepted) |
 | `release` | — | Optional release string on every event |
+| `commitSha` | — | Optional git SHA for source context (`TALARIA_COMMIT_SHA`) |
 | `userId` | — | Optional app user id |
 | `tags` | — | Tags merged into every event |
-| `minLevel` | `'debug'` | Drop captures below this severity; use `'warning'` in production |
-| `sampleRate` | `1` | Fraction of eligible events to send (after `minLevel`) |
+| `minLevel` | `'debug'` | Default/root severity; use `'warning'` in production |
+| `enforceDefaultLevel` | `false` | When true, scoped loggers cannot go below `minLevel` |
+| `loggers` | `{}` | Named presets for `Talaria.logger('name')` |
+| `sampleRate` | `1` | Fraction of eligible events to send (after level gate) |
 | `beforeSend` | — | `(event, hint) => event \| null` — mutate or drop after gates |
 | `replaysSessionSampleRate` | `0` | Fraction of sessions that upload continuously |
 | `replaysOnErrorSampleRate` | `1` | Fraction of errors that promote the ring buffer |
@@ -300,14 +320,15 @@ Query strings are stripped from network telemetry by default. Bodies and auth he
 | API | Description |
 | --- | --- |
 | `Talaria.init(options)` | Configure + start recording + install network/console hooks |
-| `Talaria.logger(options?)` | Scoped logger (`tags`, `minLevel`) |
+| `Talaria.logger(name \| options?)` | Scoped logger (`tags`, `minLevel`, named presets) |
 | `Talaria.withTags(tags)` | Shorthand for `logger({ tags })` |
 | `Talaria.debug` / `info` / `warning` / `warn` / `error` / `fatal` | Level helpers |
 | `Talaria.log(level, message, context?)` | Generic level helper |
 | `Talaria.captureException(error, context?)` | Ingest error (+ replay link when sampled) |
 | `Talaria.captureMessage(message, level?, context?)` | Ingest message |
-| `Talaria.getMinLevel()` / `setMinLevel(level)` | Read/update global floor |
-| `Talaria.isLevelEnabled(level)` | Whether a level would pass the global floor |
+| `Talaria.getMinLevel()` / `setMinLevel(level)` | Read/update default/root level |
+| `Talaria.isEnforceDefaultLevel()` / `setEnforceDefaultLevel(bool)` | Hard-floor toggle |
+| `Talaria.isLevelEnabled(level)` | Whether a level would pass the root floor |
 | `Talaria.getReplayId()` | Active upload replay id, or `null` |
 | `Talaria.flush()` | Upload buffered replay segments |
 | `Talaria.close()` | Stop recording, flush, finish |
@@ -319,7 +340,7 @@ Scoped loggers also expose `child`, `withMinLevel`, `withTags`, `isLevelEnabled`
 | Symptom | What to check |
 | --- | --- |
 | 401 / 403 | Client key (`tal_live_…`) belongs to the project; allowed domains configured for production |
-| `logger.info` never appears | `minLevel` is often `'warning'` in production — lower it or use `warn` / `error` |
+| `logger.info` never appears | Root `minLevel` is often `'warning'` — use a scoped/named logger with `minLevel: 'info'`, or lower the root |
 | Exceptions missing after `setMinLevel('fatal')` | `captureException` counts as `'error'` and is filtered by a `fatal` floor |
 | No replay on an error | Check `replay.capture` / `replay.capture_reason` on the event; clip may have been skipped or failed to upload |
 | Permanent ingest 4xx | Misconfigured env/auth/payload disables further capture for that page session so the SDK cannot spin forever |

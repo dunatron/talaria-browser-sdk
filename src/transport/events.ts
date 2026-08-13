@@ -20,6 +20,7 @@ export interface IngestEventParams {
   debugMeta?: DebugMeta;
   platform?: string;
   release?: string;
+  commitSha?: string;
   userId?: string;
   sessionId?: string;
   replayId?: string | null;
@@ -49,6 +50,7 @@ export async function ingestEvent(
   if (params.debugMeta) input.debugMeta = serializeDebugMeta(params.debugMeta);
   if (params.platform) input.platform = params.platform;
   if (params.release) input.release = params.release;
+  if (params.commitSha) input.commitSha = params.commitSha;
   if (params.userId) input.userId = params.userId;
   if (params.sessionId) input.sessionId = params.sessionId;
   if (params.replayId) input.replayId = params.replayId;
