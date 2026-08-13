@@ -7,6 +7,7 @@ import type {
   SeverityLevel,
   StackFrame,
   StackTrace,
+  Breadcrumb,
 } from '../types.js';
 
 export interface IngestEventParams {
@@ -30,6 +31,9 @@ export interface IngestEventParams {
   extraJson?: string;
   timestamp?: string;
   keepalive?: boolean;
+  traceId?: string;
+  spanId?: string;
+  breadcrumbs?: Breadcrumb[];
 }
 
 export async function ingestEvent(
@@ -59,6 +63,11 @@ export async function ingestEvent(
   if (params.tags) input.tags = params.tags;
   if (params.extraJson) input.extraJson = params.extraJson;
   if (params.timestamp) input.timestamp = params.timestamp;
+  if (params.traceId) input.traceId = params.traceId;
+  if (params.spanId) input.spanId = params.spanId;
+  if (params.breadcrumbs && params.breadcrumbs.length) {
+    input.breadcrumbs = params.breadcrumbs.map(serializeBreadcrumb);
+  }
 
   return transport.call(
     'events',
@@ -66,6 +75,19 @@ export async function ingestEvent(
     { input },
     { keepalive: params.keepalive },
   );
+}
+
+function serializeBreadcrumb(crumb: Breadcrumb): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    __className__: 'BreadcrumbDto',
+    timestamp: crumb.timestamp,
+    type: crumb.type,
+  };
+  if (crumb.category) out.category = crumb.category;
+  if (crumb.message) out.message = crumb.message;
+  if (crumb.level) out.level = crumb.level;
+  if (crumb.data && Object.keys(crumb.data).length) out.data = crumb.data;
+  return out;
 }
 
 function serializeException(data: ExceptionData): Record<string, unknown> {

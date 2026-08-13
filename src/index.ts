@@ -9,7 +9,7 @@ import type {
 const client = new TalariaClient();
 
 /**
- * Talaria browser SDK — error capture, logging, and session replay.
+ * Talaria browser SDK — error capture, logging, session replay, and tracing.
  *
  * ```ts
  * import { Talaria } from '@newtalaria/browser';
@@ -109,6 +109,14 @@ export const Talaria = {
     return client.getReplayId();
   },
 
+  getTraceId(): string | null {
+    return client.getTraceId();
+  },
+
+  getSpanId(): string | null {
+    return client.getSpanId();
+  },
+
   flush(): Promise<void> {
     return client.flush();
   },
@@ -147,6 +155,7 @@ export {
 export type {
   BeforeSendEvent,
   BeforeSendHint,
+  Breadcrumb,
   CaptureContext,
   DebugImage,
   DebugMeta,
@@ -179,5 +188,19 @@ export type {
   ReplayCaptureReason,
   ReplayCaptureStatus,
 } from './replay/capture_outcome.js';
+
+export {
+  parseTraceparent,
+  formatTraceparent,
+} from './tracing/traceparent.js';
+export {
+  isTracingEnabled,
+  resolveTracesSampleRate,
+  DEFAULT_TRACES_SAMPLE_RATE,
+} from './tracing/sampling.js';
+export { MAX_BREADCRUMBS } from './tracing/breadcrumbs.js';
+export { shouldInjectTraceparent } from './tracing/instrument_http.js';
+export { ingestSpanBatch } from './transport/spans.js';
+export type { IngestSpanParams, SpanKind, SpanStatus } from './transport/spans.js';
 
 export default Talaria;

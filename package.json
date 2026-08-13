@@ -1,7 +1,7 @@
 {
   "name": "@newtalaria/browser",
   "version": "0.1.21",
-  "description": "Talaria browser SDK — error capture and session replay (rrweb)",
+  "description": "Talaria browser SDK — error capture, session replay (rrweb), and tracing",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -41,7 +41,9 @@
     "talaria",
     "error-tracking",
     "session-replay",
-    "rrweb"
+    "rrweb",
+    "tracing",
+    "apm"
   ],
   "repository": {
     "type": "git",

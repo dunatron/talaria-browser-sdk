@@ -143,6 +143,7 @@ export interface TalariaInitOptions {
    * Extra origins whose failed requests may be promoted (exact origin strings).
    * Same-origin is always eligible. Use `['*']` to promote all origins (not recommended).
    * Example: `['https://api.stripe.com']`.
+   * Also controls which outbound fetches receive W3C `traceparent` when tracing is on.
    */
   networkErrorOrigins?: string[];
   /**
@@ -178,6 +179,17 @@ export interface TalariaInitOptions {
    * Example: `['https://cdn.example.com']` for CDN-hosted app bundles.
    */
   inAppOrigins?: string[];
+  /**
+   * Enable pageload + fetch/XHR tracing (`spans/ingestBatch`).
+   * Off until this is `true` **or** `tracesSampleRate > 0`.
+   * Explicit `false` disables tracing even if a sample rate is set.
+   */
+  enableTracing?: boolean;
+  /**
+   * Head-based sample rate for successful transactions (0–1).
+   * Error transactions are always kept. Default `0.1` when tracing is on.
+   */
+  tracesSampleRate?: number;
 }
 
 /** How an exception was captured / produced (mirrors ExceptionMechanismDto). */
@@ -252,6 +264,16 @@ export interface DebugMeta {
   images?: DebugImage[];
 }
 
+/** First-class trail attached to error events (mirrors BreadcrumbDto). */
+export interface Breadcrumb {
+  timestamp: string;
+  type: string;
+  category?: string;
+  message?: string;
+  level?: string;
+  data?: Record<string, string>;
+}
+
 export interface CaptureContext {
   tags?: Record<string, string>;
   extra?: Record<string, unknown>;
@@ -303,4 +325,6 @@ export interface ResolvedOptions {
   inAppAllowUrls: Array<string | RegExp>;
   inAppDenyUrls: Array<string | RegExp>;
   inAppOrigins: string[];
+  tracingEnabled: boolean;
+  tracesSampleRate: number;
 }

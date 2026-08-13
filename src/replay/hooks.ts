@@ -87,9 +87,22 @@ export interface NetworkMeta {
   party?: NetworkParty;
 }
 
+export interface ConsoleHookOptions {
+  /** Fired after the rrweb `talaria-console` custom event is recorded. */
+  onConsole?: (info: { level: string; message: string }) => void;
+}
+
 export interface NetworkHookOptions {
   /** Still emit rrweb breadcrumbs for all requests. */
   onNetwork?: (meta: NetworkMeta) => void;
+  /**
+   * Called before fetch/XHR is issued. Return headers to merge (existing
+   * keys on the request are not overwritten). Used for W3C `traceparent`.
+   */
+  prepareRequest?: (info: {
+    method: string;
+    rawUrl: string;
+  }) => { headers?: Record<string, string> } | void;
   /**
    * Called when a completed HTTP response should become a Talaria event
    * (status matches `failedRequestStatusCodes`).
@@ -121,7 +134,7 @@ export interface NetworkHookOptions {
   captureRequestQueryParameters?: boolean;
   failedRequestStatusCodes?: FailedRequestStatusCode[];
   failedRequestIgnoreUrls?: string[];
-  /** SDK base URL — requests under this host + /events|/replays are never promoted. */
+  /** SDK base URL — requests under this host + /events|/replays|/spans are never promoted. */
   talariaBaseUrl?: string;
 }
 
@@ -164,7 +177,7 @@ function consoleMessage(args: unknown[]): string {
 }
 
 /** Mirror console output into rrweb as `talaria-console` custom events. */
-export function installConsoleHook(): Teardown {
+export function installConsoleHook(options: ConsoleHookOptions = {}): Teardown {
   const levels = ['log', 'info', 'warn', 'error', 'debug'] as const;
   const originals: Partial<Record<(typeof levels)[number], (...args: unknown[]) => void>> = {};
 
@@ -174,13 +187,15 @@ export function installConsoleHook(): Teardown {
     console[level] = (...args: unknown[]) => {
       try {
         const serializedArgs = safeSerialize(args).slice(0, 4000);
+        const message = consoleMessage(args);
         record.addCustomEvent('talaria-console', {
           level,
           // `message` is what the replay sidebar displays; `args` kept for tooling.
-          message: consoleMessage(args),
+          message,
           args: serializedArgs,
           timestamp: Date.now(),
         });
+        options.onConsole?.({ level, message });
       } catch {
         // ignore recording failures
       }
@@ -230,10 +245,15 @@ export function buildFailedRequestIgnoreUrls(
   const ignore = [...failedRequestIgnoreUrls];
   const base = (talariaBaseUrl ?? '').replace(/\/+$/, '');
   if (base) {
-    ignore.push(`${base}/events/`, `${base}/replays/`);
+    ignore.push(`${base}/events/`, `${base}/replays/`, `${base}/spans/`);
   }
   // Relative or absolute Talaria RPC paths
-  ignore.push('/events/ingest', '/events/ingestBatch', '/replays/');
+  ignore.push(
+    '/events/ingest',
+    '/events/ingestBatch',
+    '/replays/',
+    '/spans/',
+  );
   return ignore;
 }
 
@@ -459,6 +479,63 @@ export function networkUrlParts(
   };
 }
 
+/**
+ * Merge extra headers onto a fetch call without overwriting existing keys.
+ */
+export function mergeRequestHeaders(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  extra: Record<string, string>,
+): { input: RequestInfo | URL; init?: RequestInit } {
+  const keys = Object.keys(extra);
+  if (keys.length === 0) return { input, init };
+
+  const existing = (name: string): boolean => {
+    const lower = name.toLowerCase();
+    if (init?.headers) {
+      try {
+        const headers = new Headers(init.headers);
+        if (headers.has(lower)) return true;
+      } catch {
+        // ignore invalid header bag
+      }
+    }
+    if (typeof Request !== 'undefined' && input instanceof Request) {
+      try {
+        if (input.headers.has(lower)) return true;
+      } catch {
+        // ignore
+      }
+    }
+    return false;
+  };
+
+  const toAdd: Record<string, string> = {};
+  for (const [key, value] of Object.entries(extra)) {
+    if (!existing(key)) toAdd[key] = value;
+  }
+  if (Object.keys(toAdd).length === 0) return { input, init };
+
+  if (init) {
+    const headers = new Headers(
+      init.headers ??
+        (typeof Request !== 'undefined' && input instanceof Request
+          ? input.headers
+          : undefined),
+    );
+    for (const [key, value] of Object.entries(toAdd)) headers.set(key, value);
+    return { input, init: { ...init, headers } };
+  }
+
+  if (typeof Request !== 'undefined' && input instanceof Request) {
+    const headers = new Headers(input.headers);
+    for (const [key, value] of Object.entries(toAdd)) headers.set(key, value);
+    return { input: new Request(input, { headers }), init };
+  }
+
+  return { input, init: { headers: toAdd } };
+}
+
 /** Capture fetch / XHR metadata (no bodies, no auth headers); optionally promote failures. */
 export function installNetworkHook(options: NetworkHookOptions = {}): Teardown {
   const originalFetch = typeof fetch === 'function' ? fetch.bind(globalThis) : null;
@@ -519,8 +596,21 @@ export function installNetworkHook(options: NetworkHookOptions = {}): Teardown {
             ? input.toString()
             : input.url;
 
+      let nextInput = input;
+      let nextInit = init;
       try {
-        const response = await originalFetch(input, init);
+        const prepared = options.prepareRequest?.({ method, rawUrl });
+        if (prepared?.headers) {
+          const merged = mergeRequestHeaders(input, init, prepared.headers);
+          nextInput = merged.input;
+          nextInit = merged.init;
+        }
+      } catch {
+        // never block the request
+      }
+
+      try {
+        const response = await originalFetch(nextInput, nextInit);
         const opaque = response.type === 'opaque' || response.type === 'opaqueredirect';
         handleMeta({
           method,
@@ -579,6 +669,23 @@ export function installNetworkHook(options: NetworkHookOptions = {}): Teardown {
       this.__talariaStarted = Date.now();
       this.__talariaTimedOut = false;
       this.__talariaAborted = false;
+      try {
+        const prepared = options.prepareRequest?.({
+          method: this.__talariaMethod ?? 'GET',
+          rawUrl: this.__talariaUrl ?? '',
+        });
+        if (prepared?.headers) {
+          for (const [key, value] of Object.entries(prepared.headers)) {
+            try {
+              this.setRequestHeader(key, value);
+            } catch {
+              // already sent / forbidden
+            }
+          }
+        }
+      } catch {
+        // never block the request
+      }
       this.addEventListener(
         'timeout',
         () => {

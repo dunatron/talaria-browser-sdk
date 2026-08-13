@@ -283,6 +283,35 @@ Talaria.init({
 
 Query strings are stripped from network telemetry by default. Bodies and auth headers are never captured. `AbortError` is never promoted.
 
+## Tracing (performance)
+
+Tracing is **off** until you set `enableTracing: true` or `tracesSampleRate > 0`. Spans are a parallel ingest path (`POST /spans/ingestBatch`) — they are never mixed into `events/ingest`. Browser keys need the `spansWrite` scope; auth is the same `X-API-Key` header.
+
+Sampling is **head-based**: successful pageload transactions use `tracesSampleRate` (default **10%** once tracing is on). Transactions that contain an error are always kept.
+
+```ts
+Talaria.init({
+  dsn: 'https://api.newtalaria.com',
+  apiKey: 'tal_live_…',
+  environment: 'production',
+  minLevel: 'warning',
+  enableTracing: true,       // or tracesSampleRate: 0.1
+  tracesSampleRate: 0.1,     // successful pageloads; errors are 100%
+  networkErrorOrigins: ['https://api.stripe.com'],
+});
+```
+
+When tracing is on, the SDK:
+
+- Starts a **pageload** transaction and records **Web Vitals** (`lcp`, `inp`, `cls`) as span attributes / span events.
+- Creates **fetch / XHR child spans** for instrumented requests (Talaria ingest URLs are skipped).
+- Injects W3C `traceparent` on **same-origin** and `networkErrorOrigins` allowlisted hosts only (same policy as failed-request promotion — so ads/analytics do not get a CORS preflight).
+- Flushes the span queue on the same `pagehide` / `keepalive` path as replay.
+
+Error events also receive `traceId` / `spanId` (when a trace is active) and the last **50** breadcrumbs (console + network, copied from the same hooks that feed session replay).
+
+`beforeSend` remains the only event processor — there is no `addProcessor`.
+
 ## Init options
 
 | Option | Default | Description |
@@ -308,12 +337,14 @@ Query strings are stripped from network telemetry by default. Bodies and auth he
 | `disableDefaultIntegrations` | `false` | Skip `window.onerror` / `unhandledrejection` |
 | `captureFailedRequests` | `true` | Promote HTTP status failures (first-party / allowlisted only) |
 | `captureNetworkErrors` | `true` | Promote transport/timeout failures (first-party / allowlisted only) |
-| `networkErrorOrigins` | `[]` | Extra origins eligible for promotion; `['*']` = all (not recommended) |
+| `networkErrorOrigins` | `[]` | Extra origins eligible for error promotion **and** `traceparent` injection; `['*']` = all (not recommended) |
 | `failedRequestStatusCodes` | `[[500, 599]]` | Status codes/ranges to promote when origin is eligible |
 | `failedRequestIgnoreUrls` | `[]` | URL substrings never promoted |
 | `captureRequestQueryParameters` | `false` | Keep `?query` on network URLs after redaction |
 | `inAppOrigins` | `[]` | Extra origins treated as app code for stack `inApp` |
 | `inAppAllowUrls` / `inAppDenyUrls` | `[]` | Force stack frames `inApp: true` / `false` |
+| `enableTracing` | `false` | Turn on pageload + fetch/XHR spans. Also implied when `tracesSampleRate > 0` |
+| `tracesSampleRate` | `0.1` when tracing is on, else `0` | Head sample rate for successful transactions (errors always kept) |
 
 ## Public API
 
@@ -330,7 +361,8 @@ Query strings are stripped from network telemetry by default. Bodies and auth he
 | `Talaria.isEnforceDefaultLevel()` / `setEnforceDefaultLevel(bool)` | Hard-floor toggle |
 | `Talaria.isLevelEnabled(level)` | Whether a level would pass the root floor |
 | `Talaria.getReplayId()` | Active upload replay id, or `null` |
-| `Talaria.flush()` | Upload buffered replay segments |
+| `Talaria.getTraceId()` / `getSpanId()` | Active pageload trace/span ids when tracing is on |
+| `Talaria.flush()` | Upload buffered replay segments **and** ended spans |
 | `Talaria.close()` | Stop recording, flush, finish |
 
 Scoped loggers also expose `child`, `withMinLevel`, `withTags`, `isLevelEnabled`, and `getMinLevel`.

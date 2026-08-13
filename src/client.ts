@@ -86,8 +86,35 @@ import {
   isCorrelatableTransportError,
   isTimeoutError,
 } from './utils/network_error.js';
+import { installWebVitals } from './integrations/web_vitals.js';
+import {
+  BreadcrumbBuffer,
+  consoleBreadcrumb,
+  MAX_BREADCRUMBS,
+  navigationBreadcrumb,
+  networkBreadcrumb,
+} from './tracing/breadcrumbs.js';
+import {
+  isTalariaIngestUrl,
+  shouldInjectTraceparent,
+} from './tracing/instrument_http.js';
+import {
+  isTracingEnabled,
+  resolveTracesSampleRate,
+} from './tracing/sampling.js';
+import { formatTraceparent } from './tracing/traceparent.js';
+import { Tracer } from './tracing/tracer.js';
 
 const PLATFORM_JAVASCRIPT = 'javascript';
+const PAGELOAD_FINALIZE_MS = 10_000;
+
+function currentLocation(): { origin?: string; href?: string; pathname?: string } | undefined {
+  try {
+    return globalThis.location;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Keys that belong on first-class exception / stack fields — never in extra. */
 const EXTRA_LOCATION_KEYS = new Set([
@@ -324,6 +351,8 @@ function resolveOptions(options: TalariaInitOptions): ResolvedOptions {
     inAppAllowUrls: options.inAppAllowUrls ?? [],
     inAppDenyUrls: options.inAppDenyUrls ?? [],
     inAppOrigins: options.inAppOrigins ?? [],
+    tracingEnabled: isTracingEnabled(options),
+    tracesSampleRate: resolveTracesSampleRate(options),
   };
 }
 
@@ -434,6 +463,9 @@ export class TalariaClient {
   private ingestDisabled = false;
   /** Recent fetch/XHR transport failures for correlation + dedupe. */
   private recentNetworkFailures: RecentNetworkFailure[] = [];
+  private tracer: Tracer | null = null;
+  private breadcrumbs = new BreadcrumbBuffer();
+  private pageloadTimer: ReturnType<typeof setTimeout> | null = null;
 
   init(options: TalariaInitOptions): void {
     if (this.options) {
@@ -460,6 +492,8 @@ export class TalariaClient {
     this.lastReplayCaptureFailure = null;
     this.recentNetworkFailures = [];
     this.browserContext = parseBrowserContext();
+    this.breadcrumbs.clear();
+    this.tracer = null;
     void collectBrowserContext().then((ctx) => {
       if (this.options) this.browserContext = ctx;
     });
@@ -483,18 +517,37 @@ export class TalariaClient {
     });
 
     this.teardowns.push(
-      installConsoleHook(),
+      installConsoleHook({
+        onConsole: ({ level, message }) => {
+          this.breadcrumbs.add(consoleBreadcrumb(level, message));
+        },
+      }),
       installNetworkHook({
         captureFailedRequests: this.options.captureFailedRequests,
         captureNetworkErrors: this.options.captureNetworkErrors,
         networkErrorOrigins: this.options.networkErrorOrigins,
-        pageOrigin:
-          typeof location !== 'undefined' ? location.origin : undefined,
+        pageOrigin: currentLocation()?.origin,
         includeNetworkUrlQuery: this.options.includeNetworkUrlQuery,
         failedRequestStatusCodes: this.options.failedRequestStatusCodes,
         failedRequestIgnoreUrls: this.options.failedRequestIgnoreUrls,
         talariaBaseUrl: this.options.baseUrl,
+        prepareRequest: this.options.tracingEnabled
+          ? ({ rawUrl }) => this.prepareTracedRequest(rawUrl)
+          : undefined,
         onNetwork: (meta) => {
+          this.breadcrumbs.add(networkBreadcrumb(meta));
+          if (
+            this.tracer &&
+            !isTalariaIngestUrl(meta.url || '', {
+              talariaBaseUrl: this.options?.baseUrl,
+              failedRequestIgnoreUrls: this.options?.failedRequestIgnoreUrls,
+            })
+          ) {
+            this.tracer.recordHttpSpan(meta, {
+              includeQuery: this.options?.includeNetworkUrlQuery,
+              pageOrigin: currentLocation()?.origin,
+            });
+          }
           if (
             (meta.failureKind === 'network' || meta.failureKind === 'timeout') &&
             !meta.aborted
@@ -554,6 +607,8 @@ export class TalariaClient {
       installVisibilityResumeHook(() => this.onForegroundResume()),
     );
 
+    this.startTracer();
+
     if (!this.options.disableDefaultIntegrations) {
       this.installGlobalHandlers();
     }
@@ -564,6 +619,7 @@ export class TalariaClient {
 
     if (typeof window !== 'undefined') {
       const onHide = () => {
+        this.tracer?.endPageload();
         void this.flush({ reason: 'pagehide', keepalive: true, finish: true });
       };
       window.addEventListener('pagehide', onHide);
@@ -585,6 +641,14 @@ export class TalariaClient {
   getReplayId(): string | null {
     if (this.uploadEnabled && this.replayId) return this.replayId;
     return this.linkableReplayId;
+  }
+
+  getTraceId(): string | null {
+    return this.tracer?.getTraceId() ?? null;
+  }
+
+  getSpanId(): string | null {
+    return this.tracer?.getSpanId() ?? null;
   }
 
   async captureException(
@@ -816,16 +880,27 @@ export class TalariaClient {
     keepalive?: boolean;
     finish?: boolean;
   }): Promise<void> {
-    if (!this.options || !this.transport || this.closed) return;
+    if (!this.options || this.closed) return;
 
     const keepalive = opts?.keepalive ?? false;
+    const spanFlush = this.tracer
+      ? this.tracer.flush({ keepalive })
+      : Promise.resolve();
 
-    if (!this.uploadEnabled) {
-      this.buffer.trimRing();
+    if (!this.transport) {
+      await spanFlush;
       return;
     }
 
-    await this.enqueueUpload(async () => {
+    if (!this.uploadEnabled) {
+      this.buffer.trimRing();
+      await spanFlush;
+      return;
+    }
+
+    await Promise.all([
+      spanFlush,
+      this.enqueueUpload(async () => {
       // May have been disabled by an earlier queued task (error clip / limit).
       if (!this.uploadEnabled || this.closed) return;
 
@@ -854,7 +929,8 @@ export class TalariaClient {
           this.clearMaxDurationTimer();
         }
       }
-    });
+      }),
+    ]);
   }
 
   /**
@@ -866,6 +942,7 @@ export class TalariaClient {
 
     this.clearErrorClipTimer();
     this.clearMaxDurationTimer();
+    this.clearPageloadTimer();
 
     if (this.flushTimer) {
       clearInterval(this.flushTimer);
@@ -875,7 +952,7 @@ export class TalariaClient {
     this.recorder?.stop();
     this.recorder = null;
 
-    for (const teardown of this.teardowns.splice(0)) {
+    for (const teardown of this.teardowns.splice(0).reverse()) {
       try {
         teardown();
       } catch {
@@ -884,13 +961,21 @@ export class TalariaClient {
     }
 
     // Flush BEFORE marking closed — otherwise flush() no-ops.
-    if (this.uploadEnabled && this.options && this.transport) {
+    this.tracer?.endPageload();
+    if (this.options && this.transport) {
       try {
         await this.flush({ reason: 'close', finish: true });
       } catch (error) {
         console.warn('@newtalaria/browser: close flush failed', error);
       }
     }
+    try {
+      await this.tracer?.shutdown();
+    } catch {
+      // ignore
+    }
+    this.tracer = null;
+    this.breadcrumbs.clear();
 
     this.options = null;
     this.transport = null;
@@ -1014,6 +1099,9 @@ export class TalariaClient {
     const occurredAt = new Date();
 
     const isErrorLike = level === 'error' || level === 'fatal';
+    if (isErrorLike) {
+      this.tracer?.markError();
+    }
     let errorClipOutcome: ReplayCaptureOutcome | null = null;
     let attemptedErrorClip = false;
 
@@ -1135,11 +1223,16 @@ export class TalariaClient {
         userId,
         sessionId: this.sessionId ?? undefined,
         replayId: replayId ?? undefined,
-        url: typeof location !== 'undefined' ? location.href : undefined,
+        url: currentLocation()?.href,
         tags: Object.keys(tags).length ? tags : undefined,
         extraJson: extra ? JSON.stringify(extra) : undefined,
         timestamp: occurredAt.toISOString(),
         keepalive: args.keepalive,
+        traceId: this.tracer?.getTraceId() ?? undefined,
+        spanId: this.tracer?.getSpanId() ?? undefined,
+        breadcrumbs: isErrorLike
+          ? this.breadcrumbs.snapshot(MAX_BREADCRUMBS)
+          : undefined,
       });
       // Consumed — don't attach the same clip to a later unrelated event.
       if (replayId && replayId === this.linkableReplayId) {
@@ -1433,6 +1526,96 @@ export class TalariaClient {
     }
   }
 
+  private startTracer(): void {
+    if (!this.options?.tracingEnabled || !this.transport) return;
+
+    const resource: Record<string, string> = {
+      'service.name': this.options.tags?.service || 'browser',
+      'deployment.environment': this.options.environment,
+      'telemetry.sdk.name': SDK_NAME,
+      'telemetry.sdk.version': SDK_VERSION,
+    };
+    if (this.options.release) {
+      resource['service.version'] = this.options.release;
+    }
+
+    this.tracer = new Tracer({
+      transport: this.transport,
+      sampleRate: this.options.tracesSampleRate,
+      resource,
+      environment: this.options.environment,
+      release: this.options.release,
+      userId: this.options.userId,
+      getSessionId: () => this.sessionId,
+      getReplayId: () => this.getReplayId(),
+    });
+
+    this.teardowns.push(
+      installWebVitals((vital) => {
+        this.tracer?.recordWebVital(vital);
+      }),
+    );
+
+    const loc = currentLocation();
+    const path = loc?.pathname || '/';
+    const href = loc?.href;
+    if (href) this.breadcrumbs.add(navigationBreadcrumb(href));
+    this.tracer.startPageload({ name: path, url: href });
+    this.schedulePageloadEnd();
+  }
+
+  private schedulePageloadEnd(): void {
+    this.clearPageloadTimer();
+    const finalize = () => {
+      this.pageloadTimer = setTimeout(() => {
+        this.pageloadTimer = null;
+        this.tracer?.endPageload();
+        void this.tracer?.flush();
+      }, PAGELOAD_FINALIZE_MS);
+    };
+    if (typeof document !== 'undefined' && document.readyState === 'complete') {
+      finalize();
+      return;
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('load', finalize, { once: true });
+      this.teardowns.push(() => {
+        window.removeEventListener('load', finalize);
+      });
+    } else {
+      finalize();
+    }
+  }
+
+  private clearPageloadTimer(): void {
+    if (this.pageloadTimer) {
+      clearTimeout(this.pageloadTimer);
+      this.pageloadTimer = null;
+    }
+  }
+
+  private prepareTracedRequest(
+    rawUrl: string,
+  ): { headers?: Record<string, string> } | void {
+    const opts = this.options;
+    const tracer = this.tracer;
+    if (!opts || !tracer) return;
+    const ctx = tracer.getActiveContext();
+    if (!ctx) return;
+    const pageOrigin = currentLocation()?.origin;
+    if (
+      !shouldInjectTraceparent(rawUrl, {
+        networkErrorOrigins: opts.networkErrorOrigins,
+        pageOrigin,
+        talariaBaseUrl: opts.baseUrl,
+        failedRequestIgnoreUrls: opts.failedRequestIgnoreUrls,
+      })
+    ) {
+      return;
+    }
+    return { headers: { traceparent: formatTraceparent(ctx) } };
+  }
+
   private inAppFrameOptions(): InAppFrameOptions {
     const opts = this.options;
     let pageOrigin: string | undefined;
@@ -1616,7 +1799,7 @@ export class TalariaClient {
       replayId: this.replayId,
       environment: this.options.environment,
       sessionId: this.sessionId,
-      url: typeof location !== 'undefined' ? location.href : undefined,
+      url: currentLocation()?.href,
       userId: this.options.userId,
       keepalive: opts.keepalive,
     });
