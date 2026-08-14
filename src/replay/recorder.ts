@@ -29,29 +29,41 @@ export function startRecorder(options: RecorderOptions): RecorderHandle {
     };
   }
 
-  const stopFn = record({
-    emit(event) {
-      options.onEvent(event as RrwebEvent);
-    },
-    maskAllInputs: options.maskAllInputs,
-    maskInputOptions: {
-      password: true,
-    },
-    blockSelector: defaultBlockSelector(options.blockSelector),
-    recordCanvas: false,
-    collectFonts: false,
-    inlineStylesheet: options.inlineStylesheet,
-    // Shrink DOM snapshots on heavy sites (docs / marketing).
-    slimDOMOptions: 'all',
-    ...(options.checkoutEveryNms != null && options.checkoutEveryNms > 0
-      ? { checkoutEveryNms: options.checkoutEveryNms }
-      : {}),
-    sampling: {
-      mousemove: 150,
-      scroll: 200,
-      input: 'last',
-    },
-  });
+  let stopFn: ReturnType<typeof record> | undefined;
+  try {
+    stopFn = record({
+      emit(event) {
+        try {
+          options.onEvent(event as RrwebEvent);
+        } catch {
+          // Snapshot/emit must not become a user-facing error.
+        }
+      },
+      maskAllInputs: options.maskAllInputs,
+      maskInputOptions: {
+        password: true,
+      },
+      blockSelector: defaultBlockSelector(options.blockSelector),
+      recordCanvas: false,
+      collectFonts: false,
+      inlineStylesheet: options.inlineStylesheet,
+      // Shrink DOM snapshots on heavy sites (docs / marketing).
+      slimDOMOptions: 'all',
+      ...(options.checkoutEveryNms != null && options.checkoutEveryNms > 0
+        ? { checkoutEveryNms: options.checkoutEveryNms }
+        : {}),
+      sampling: {
+        mousemove: 150,
+        scroll: 200,
+        input: 'last',
+      },
+    });
+  } catch {
+    return {
+      stop: () => {},
+      takeFullSnapshot: () => {},
+    };
+  }
 
   return {
     stop: () => {

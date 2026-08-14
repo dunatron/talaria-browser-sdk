@@ -699,6 +699,7 @@ export class TalariaClient {
       isSdkInternalNoise({
         message: err.message,
         stack: err.stack,
+        filename,
       })
     ) {
       return;
@@ -1732,6 +1733,11 @@ export class TalariaClient {
 
       if (
         isBrowserExtensionNoise({
+          message: event.message || error.message,
+          stack: error.stack,
+          filename: event.filename,
+        }) ||
+        isSdkInternalNoise({
           message: event.message || error.message,
           stack: error.stack,
           filename: event.filename,

@@ -154,6 +154,32 @@ describe('parseStackTrace', () => {
     assert.equal(top.inApp, true);
   });
 
+  it('parses Firefox / Safari frames oldest → newest', () => {
+    const stack = `Uo@https://cdn.jsdelivr.net/npm/@newtalaria/browser@0.1.22/+esm:67:1721
+ne@https://cdn.jsdelivr.net/npm/@newtalaria/browser@0.1.22/+esm:67:1830
+Hc/<@https://www.dartriver.co.nz/themes/app.js:40:9`;
+
+    const parsed = parseStackTrace(stack, PAGE);
+    assert.ok(parsed);
+    assert.equal(parsed!.frames.length, 3);
+    assert.equal(parsed!.frames[0]!.functionName, 'Hc/<');
+    assert.equal(parsed!.frames[0]!.filename, 'app.js');
+    assert.equal(parsed!.frames[0]!.lineno, 40);
+    assert.equal(parsed!.frames[0]!.inApp, true);
+    assert.equal(parsed!.frames[2]!.functionName, 'Uo');
+    assert.equal(parsed!.frames[2]!.lineno, 67);
+    assert.equal(parsed!.frames[2]!.colno, 1721);
+    assert.equal(parsed!.frames[2]!.inApp, false);
+  });
+
+  it('does not treat Error message lines as Gecko frames', () => {
+    assert.equal(
+      parseStackLine('Permission denied to access property "nodeType"'),
+      null,
+    );
+    assert.equal(parseStackLine('Error: boom'), null);
+  });
+
   it('applySourceLocation synthesizes a frame when stack is empty', () => {
     const enriched = applySourceLocation(
       undefined,

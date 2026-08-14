@@ -35,4 +35,45 @@ describe('isSdkInternalNoise', () => {
       false,
     );
   });
+
+  it('drops Firefox rrweb stacks that only reference the SDK', () => {
+    const stack = `Uo@https://cdn.jsdelivr.net/npm/@newtalaria/browser@0.1.22/+esm:67:1721
+ne@https://cdn.jsdelivr.net/npm/@newtalaria/browser@0.1.22/+esm:67:1830
+Hc/<@https://cdn.jsdelivr.net/npm/@newtalaria/browser@0.1.22/+esm:67:14055
+Hc/</<@https://cdn.jsdelivr.net/npm/@newtalaria/browser@0.1.22/+esm:67:13042
+Hc/<@https://cdn.jsdelivr.net/npm/@newtalaria/browser@0.1.22/+esm:67:13026
+Hc/<@https://cdn.jsdelivr.net/npm/@newtalaria/browser@0.1.22/+esm:67:7345`;
+    assert.equal(
+      isSdkInternalNoise({
+        message: 'Permission denied to access property "nodeType"',
+        stack,
+        filename:
+          'https://cdn.jsdelivr.net/npm/@newtalaria/browser@0.1.22/+esm',
+      }),
+      true,
+    );
+  });
+
+  it('drops Firefox DOM permission errors when onerror filename is the SDK', () => {
+    assert.equal(
+      isSdkInternalNoise({
+        message: 'Permission denied to access property "nodeType"',
+        filename:
+          'https://cdn.jsdelivr.net/npm/@newtalaria/browser@0.1.22/+esm',
+      }),
+      true,
+    );
+  });
+
+  it('keeps Firefox DOM permission errors from app code', () => {
+    assert.equal(
+      isSdkInternalNoise({
+        message: 'Permission denied to access property "nodeType"',
+        stack:
+          'foo@https://ngaitahu.iwi.nz/themes/app.js:40:9\nbar@https://ngaitahu.iwi.nz/themes/app.js:12:1',
+        filename: 'https://ngaitahu.iwi.nz/themes/app.js',
+      }),
+      false,
+    );
+  });
 });

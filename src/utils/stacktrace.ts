@@ -7,6 +7,9 @@ const V8_FRAME =
 /** V8 bare: `at Object.method` / `at <anonymous>` (no location). */
 const V8_FRAME_BARE = /^\s*at\s+(.+)\s*$/;
 
+/** Firefox / Safari: `fn@url:line:col` or `@url:line:col`. */
+const GECKO_FRAME = /^\s*(?:(.*?)@)?(\S+):(\d+):(\d+)\s*$/;
+
 const EXTENSION_URL =
   /(?:chrome|moz|safari|safari-web|ms-browser)-extension:\/\//i;
 
@@ -23,8 +26,9 @@ export interface InAppFrameOptions {
 }
 
 /**
- * Parse a V8 / Chrome `Error.stack` string into structured frames.
- * Returns frames in **oldest → newest** order (crash site last).
+ * Parse a V8 / Chrome / Firefox / Safari `Error.stack` string into
+ * structured frames. Returns frames in **oldest → newest** order
+ * (crash site last).
  */
 export function parseStackTrace(
   stack?: string | null,
@@ -45,42 +49,70 @@ export function parseStackTrace(
   return { frames: parsed };
 }
 
-/** Parse a single V8 stack line into a frame, or null if not a frame. */
+/** Parse a single V8 or Gecko stack line into a frame, or null if not a frame. */
 export function parseStackLine(
   line: string,
   inAppOptions?: InAppFrameOptions,
 ): StackFrame | null {
-  if (!/^\s*at\s+/.test(line)) return null;
+  if (/^\s*at\s+/.test(line)) {
+    const v8 = V8_FRAME.exec(line);
+    if (v8) {
+      return frameFromParts(v8[1], v8[2], v8[3], v8[4], inAppOptions);
+    }
 
-  const v8 = V8_FRAME.exec(line);
-  if (v8) {
-    const functionName = cleanFunction(v8[1]);
-    const absPath = stripQuery(v8[2] ?? '');
-    const lineno = Number.parseInt(v8[3] ?? '', 10);
-    const colno = Number.parseInt(v8[4] ?? '', 10);
-    return {
-      functionName,
-      absPath: absPath || undefined,
-      filename: basename(absPath),
-      lineno: Number.isFinite(lineno) ? lineno : undefined,
-      colno: Number.isFinite(colno) ? colno : undefined,
-      inApp: isInAppFrame(absPath, inAppOptions),
-      platform: 'javascript',
-    };
+    const bare = V8_FRAME_BARE.exec(line);
+    if (bare) {
+      const functionName = cleanFunction(bare[1]);
+      if (!functionName) return null;
+      return {
+        functionName,
+        inApp: false,
+        platform: 'javascript',
+      };
+    }
+
+    return null;
   }
 
-  const bare = V8_FRAME_BARE.exec(line);
-  if (bare) {
-    const functionName = cleanFunction(bare[1]);
-    if (!functionName) return null;
-    return {
-      functionName,
-      inApp: false,
-      platform: 'javascript',
-    };
+  const gecko = GECKO_FRAME.exec(line);
+  if (!gecko) return null;
+  const absPath = gecko[2] ?? '';
+  // Message lines like `Error: boom` must not become frames.
+  if (
+    !absPath ||
+    /^(?:error|typeerror|referenceerror|syntaxerror)$/i.test(absPath)
+  ) {
+    return null;
   }
+  if (
+    !/https?:\/\//i.test(absPath) &&
+    !absPath.includes('/') &&
+    !absPath.includes('\\')
+  ) {
+    return null;
+  }
+  return frameFromParts(gecko[1], absPath, gecko[3], gecko[4], inAppOptions);
+}
 
-  return null;
+function frameFromParts(
+  rawFunction: string | undefined,
+  rawPath: string | undefined,
+  rawLine: string | undefined,
+  rawCol: string | undefined,
+  inAppOptions?: InAppFrameOptions,
+): StackFrame {
+  const absPath = stripQuery(rawPath ?? '');
+  const lineno = Number.parseInt(rawLine ?? '', 10);
+  const colno = Number.parseInt(rawCol ?? '', 10);
+  return {
+    functionName: cleanFunction(rawFunction),
+    absPath: absPath || undefined,
+    filename: basename(absPath),
+    lineno: Number.isFinite(lineno) ? lineno : undefined,
+    colno: Number.isFinite(colno) ? colno : undefined,
+    inApp: isInAppFrame(absPath, inAppOptions),
+    platform: 'javascript',
+  };
 }
 
 /**
