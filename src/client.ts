@@ -775,6 +775,7 @@ export class TalariaClient {
       level,
       title: context?.title,
       context,
+      platform: PLATFORM_JAVASCRIPT,
       respectMinLevel,
     });
   }
@@ -1777,7 +1778,7 @@ export class TalariaClient {
       ) {
         return;
       }
-      void this.captureException(reason, {
+      void this.captureException(err, {
         mechanism: { type: 'unhandledrejection', handled: false },
       });
     };

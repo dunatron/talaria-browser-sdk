@@ -122,4 +122,77 @@ describe('captureException exception payload', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('marks unhandledrejection as handled: false', async () => {
+    let body: Record<string, unknown> | null = null;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    try {
+      const client = new TalariaClient();
+      client.init({
+        dsn: 'http://localhost:8080',
+        apiKey: 'tal_live_test',
+        environment: 'development',
+        replaysSessionSampleRate: 0,
+        replaysOnErrorSampleRate: 0,
+        disableDefaultIntegrations: true,
+      });
+
+      const err = new Error('boom');
+      await client.captureException(err, {
+        mechanism: { type: 'unhandledrejection', handled: false },
+      });
+      await client.close();
+
+      const input = body!.input as Record<string, unknown>;
+      assert.equal(input.platform, 'javascript');
+      const exception = input.exception as {
+        values: Array<{ mechanism?: { type?: string; handled?: boolean } }>;
+      };
+      assert.equal(exception.values[0]!.mechanism?.type, 'unhandledrejection');
+      assert.equal(exception.values[0]!.mechanism?.handled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('sets platform javascript on captureMessage', async () => {
+    let body: Record<string, unknown> | null = null;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    try {
+      const client = new TalariaClient();
+      client.init({
+        dsn: 'http://localhost:8080',
+        apiKey: 'tal_live_test',
+        environment: 'development',
+        replaysSessionSampleRate: 0,
+        replaysOnErrorSampleRate: 0,
+        disableDefaultIntegrations: true,
+      });
+
+      await client.captureMessage('hello from logger');
+      await client.close();
+
+      const input = body!.input as Record<string, unknown>;
+      assert.equal(input.platform, 'javascript');
+      assert.equal(input.message, 'hello from logger');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
