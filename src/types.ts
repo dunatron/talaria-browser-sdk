@@ -93,6 +93,15 @@ export interface TalariaInitOptions {
     event: BeforeSendEvent,
     hint: BeforeSendHint,
   ) => BeforeSendEvent | null;
+  /**
+   * Drop events whose message matches a string (substring) or RegExp.
+   * Merged with Talaria's default known-noise list.
+   */
+  ignoreErrors?: Array<string | RegExp>;
+  /**
+   * Drop events when a stack frame URL matches. Secondary to `ignoreErrors`.
+   */
+  ignoreUrls?: Array<string | RegExp>;
   /** Fraction of sessions that upload continuously (0–1). Default `0`. */
   replaysSessionSampleRate?: number;
   /**
@@ -307,6 +316,8 @@ export interface ResolvedOptions {
     event: BeforeSendEvent,
     hint: BeforeSendHint,
   ) => BeforeSendEvent | null;
+  ignoreErrors: Array<string | RegExp>;
+  ignoreUrls: Array<string | RegExp>;
   replaysSessionSampleRate: number;
   replaysOnErrorSampleRate: number;
   replaysErrorAfterMs: number;

@@ -15,6 +15,12 @@ import { isBrowserExtensionNoise } from './utils/browser_extension_noise.js';
 import { isOpaqueCrossOriginScriptError } from './utils/opaque_script_error.js';
 import { isSdkInternalNoise } from './utils/sdk_internal_noise.js';
 import {
+  DEFAULT_IGNORE_ERRORS,
+  shouldDropCapturedError,
+  shouldIgnoreErrorMessage,
+  shouldIgnoreStackUrls,
+} from './utils/event_filters.js';
+import {
   browserContextTags,
   collectBrowserContext,
   parseBrowserContext,
@@ -330,6 +336,8 @@ function resolveOptions(options: TalariaInitOptions): ResolvedOptions {
     loggers: normalizeLoggerPresets(options.loggers),
     sampleRate: clamp01(options.sampleRate ?? 1),
     beforeSend: options.beforeSend,
+    ignoreErrors: [...DEFAULT_IGNORE_ERRORS, ...(options.ignoreErrors ?? [])],
+    ignoreUrls: options.ignoreUrls ?? [],
     replaysSessionSampleRate: clamp01(options.replaysSessionSampleRate ?? 0),
     replaysOnErrorSampleRate: clamp01(options.replaysOnErrorSampleRate ?? 1),
     replaysErrorAfterMs: normalizeErrorAfterMs(options.replaysErrorAfterMs),
@@ -686,20 +694,15 @@ export class TalariaClient {
         ? error
         : new Error(typeof error === 'string' ? error : 'Unknown error');
 
-    // Intentional cancellations — not actionable.
-    if (isAbortError(err)) return;
-
     const filename = context?.source?.filename;
     if (
-      isBrowserExtensionNoise({
+      shouldDropCapturedError({
         message: err.message,
         stack: err.stack,
         filename,
-      }) ||
-      isSdkInternalNoise({
-        message: err.message,
-        stack: err.stack,
-        filename,
+        error: err,
+        ignoreErrors: this.options?.ignoreErrors ?? DEFAULT_IGNORE_ERRORS,
+        ignoreUrls: this.options?.ignoreUrls ?? [],
       })
     ) {
       return;
@@ -1051,6 +1054,16 @@ export class TalariaClient {
     ) {
       return;
     }
+    if (
+      shouldIgnoreErrorMessage(args.message, this.options.ignoreErrors) ||
+      shouldIgnoreStackUrls(
+        args.stackTrace,
+        args.context?.source?.filename,
+        this.options.ignoreUrls,
+      )
+    ) {
+      return;
+    }
     if (Math.random() >= this.options.sampleRate) return;
 
     let message = args.message;
@@ -1187,6 +1200,7 @@ export class TalariaClient {
               browser: {
                 name: this.browserContext.name,
                 version: this.browserContext.version,
+                engine: this.browserContext.engine,
                 os: this.browserContext.os,
                 osVersion: this.browserContext.osVersion,
                 device: this.browserContext.device,
@@ -1195,6 +1209,13 @@ export class TalariaClient {
                 bot: this.browserContext.bot,
                 ...(this.browserContext.botName
                   ? { botName: this.browserContext.botName }
+                  : {}),
+                webview: this.browserContext.webview,
+                ...(this.browserContext.webviewHost
+                  ? { webviewHost: this.browserContext.webviewHost }
+                  : {}),
+                ...(this.browserContext.webviewVersion
+                  ? { webviewVersion: this.browserContext.webviewVersion }
                   : {}),
               },
             }
@@ -1228,6 +1249,7 @@ export class TalariaClient {
         url: currentLocation()?.href,
         tags: Object.keys(tags).length ? tags : undefined,
         extraJson: extra ? JSON.stringify(extra) : undefined,
+        userAgent: this.browserContext?.userAgent,
         timestamp: occurredAt.toISOString(),
         keepalive: args.keepalive,
         traceId: this.tracer?.getTraceId() ?? undefined,
@@ -1724,24 +1746,20 @@ export class TalariaClient {
     if (typeof window === 'undefined') return;
 
     const onError = (event: ErrorEvent) => {
-      // Browsers redact cross-origin throws to "Script error." — not actionable.
-      if (isOpaqueCrossOriginScriptError(event)) return;
-
       const error =
         event.error instanceof Error
           ? event.error
           : new Error(event.message || 'window.onerror');
 
       if (
-        isBrowserExtensionNoise({
+        shouldDropCapturedError({
           message: event.message || error.message,
           stack: error.stack,
           filename: event.filename,
-        }) ||
-        isSdkInternalNoise({
-          message: event.message || error.message,
-          stack: error.stack,
-          filename: event.filename,
+          error,
+          errorEvent: event,
+          ignoreErrors: this.options?.ignoreErrors ?? DEFAULT_IGNORE_ERRORS,
+          ignoreUrls: this.options?.ignoreUrls ?? [],
         })
       ) {
         return;
@@ -1767,13 +1785,12 @@ export class TalariaClient {
               typeof reason === 'string' ? reason : 'unhandledrejection',
             );
       if (
-        isBrowserExtensionNoise({
+        shouldDropCapturedError({
           message: err.message,
           stack: err.stack,
-        }) ||
-        isSdkInternalNoise({
-          message: err.message,
-          stack: err.stack,
+          error: err,
+          ignoreErrors: this.options?.ignoreErrors ?? DEFAULT_IGNORE_ERRORS,
+          ignoreUrls: this.options?.ignoreUrls ?? [],
         })
       ) {
         return;
@@ -1808,6 +1825,7 @@ export class TalariaClient {
       sessionId: this.sessionId,
       url: currentLocation()?.href,
       userId: this.options.userId,
+      userAgent: this.browserContext?.userAgent,
       keepalive: opts.keepalive,
     });
     this.startedOnServer = true;

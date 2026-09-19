@@ -8,6 +8,7 @@ export interface StartReplayParams {
   sessionId?: string;
   url?: string;
   userId?: string;
+  userAgent?: string;
   keepalive?: boolean;
 }
 
@@ -47,6 +48,7 @@ export async function startReplay(
   if (params.sessionId) input.sessionId = params.sessionId;
   if (params.url) input.url = params.url;
   if (params.userId) input.userId = params.userId;
+  if (params.userAgent) input.userAgent = params.userAgent;
 
   return transport.call(
     'replays',

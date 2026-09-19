@@ -19,6 +19,8 @@ describe('parseBrowserContext', () => {
     assert.equal(ctx.device, 'desktop');
     assert.equal(ctx.language, 'en-NZ');
     assert.equal(ctx.bot, false);
+    assert.equal(ctx.engine, 'Blink');
+    assert.equal(ctx.webview, false);
   });
 
   it('parses Mobile Safari on iOS', () => {
@@ -29,6 +31,8 @@ describe('parseBrowserContext', () => {
     assert.equal(ctx.version, '17.5');
     assert.equal(ctx.os, 'iOS');
     assert.equal(ctx.device, 'mobile');
+    assert.equal(ctx.engine, 'WebKit');
+    assert.equal(ctx.webview, false);
   });
 
   it('parses Firefox', () => {
@@ -39,6 +43,52 @@ describe('parseBrowserContext', () => {
     assert.equal(ctx.version, '127.0');
     assert.equal(ctx.os, 'Windows');
     assert.equal(ctx.device, 'desktop');
+    assert.equal(ctx.engine, 'Gecko');
+    assert.equal(ctx.webview, false);
+  });
+
+  it('detects Instagram iOS in-app browser without inventing Safari-the-app', () => {
+    const ctx = parseBrowserContext(
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 26_6_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 441.0.0.29.79 IABMV/1 Safari/604.1',
+    );
+    assert.equal(ctx.name, 'Safari');
+    assert.equal(ctx.engine, 'WebKit');
+    assert.equal(ctx.os, 'iOS');
+    assert.equal(ctx.webview, true);
+    assert.equal(ctx.webviewHost, 'Instagram');
+    assert.equal(ctx.webviewVersion, '441.0.0.29.79');
+    const tags = browserContextTags(ctx);
+    assert.equal(tags.webview, 'true');
+    assert.equal(tags['webview.host'], 'Instagram');
+    assert.equal(tags['browser.engine'], 'WebKit');
+  });
+
+  it('detects Facebook iOS in-app browser', () => {
+    const ctx = parseBrowserContext(
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 26_6_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 [FBAN/FBIOS;FBAV/578.1.0.71.72;FBDV/iPhone]',
+    );
+    assert.equal(ctx.webview, true);
+    assert.equal(ctx.webviewHost, 'Facebook');
+    assert.equal(ctx.webviewVersion, '578.1.0.71.72');
+    assert.equal(ctx.engine, 'WebKit');
+  });
+
+  it('detects Facebook Android WebView', () => {
+    const ctx = parseBrowserContext(
+      'Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/AP2A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/126.0.0.0 Mobile Safari/537.36 [FB_IAB/FB4A;FBAV/450.0.0.0.0;]',
+    );
+    assert.equal(ctx.name, 'Chrome');
+    assert.equal(ctx.engine, 'Blink');
+    assert.equal(ctx.webview, true);
+    assert.equal(ctx.webviewHost, 'Facebook');
+  });
+
+  it('detects TikTok in-app browser', () => {
+    const ctx = parseBrowserContext(
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 musical_ly_40.0.0 BytedanceWebview/d8a2c75',
+    );
+    assert.equal(ctx.webview, true);
+    assert.equal(ctx.webviewHost, 'TikTok');
   });
 
   it('detects Baiduspider without inventing a browser', () => {

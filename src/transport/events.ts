@@ -29,6 +29,7 @@ export interface IngestEventParams {
   url?: string;
   tags?: Record<string, string>;
   extraJson?: string;
+  userAgent?: string;
   timestamp?: string;
   keepalive?: boolean;
   traceId?: string;
@@ -62,6 +63,7 @@ export async function ingestEvent(
   if (params.url) input.url = params.url;
   if (params.tags) input.tags = params.tags;
   if (params.extraJson) input.extraJson = params.extraJson;
+  if (params.userAgent) input.userAgent = params.userAgent;
   if (params.timestamp) input.timestamp = params.timestamp;
   if (params.traceId) input.traceId = params.traceId;
   if (params.spanId) input.spanId = params.spanId;

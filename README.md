@@ -64,7 +64,7 @@ Talaria.init({
 | Product dims | Put stable filters in init `tags` (`service`, `platform`) |
 | Privacy | Leave `maskAllInputs: true`; mark sensitive DOM with `data-talaria-mask` |
 
-`Talaria.init` installs `window.onerror` / `unhandledrejection` handlers unless you pass `disableDefaultIntegrations: true`. Opaque cross-origin `"Script error."` events and browser-extension noise are ignored by default.
+`Talaria.init` installs `window.onerror` / `unhandledrejection` handlers unless you pass `disableDefaultIntegrations: true`. Opaque cross-origin `"Script error."` events, browser-extension stacks, and Sentry-class unactionable messages (`_AutofillCallbackHandler`, ResizeObserver loop, CEFSharp `simulateEvent`, …) are ignored by default. Override with `ignoreErrors` / `ignoreUrls`. Gate order: built-in noise → ignoreErrors → ignoreUrls → minLevel → sampleRate → beforeSend. Dropping an error does not stop session replay.
 
 `environment` must resolve to `production` | `staging` | `development`. Common aliases work (`prod` / `live` → `production`, `test` / `uat` → `staging`, `dev` / `local` → `development`). Invalid values throw at `init`.
 
