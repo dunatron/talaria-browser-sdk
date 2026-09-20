@@ -11,9 +11,6 @@ import type {
 } from './types.js';
 import { createId } from './utils/id.js';
 import { normalizeEnvironment } from './utils/environment.js';
-import { isBrowserExtensionNoise } from './utils/browser_extension_noise.js';
-import { isOpaqueCrossOriginScriptError } from './utils/opaque_script_error.js';
-import { isSdkInternalNoise } from './utils/sdk_internal_noise.js';
 import {
   DEFAULT_IGNORE_ERRORS,
   shouldDropCapturedError,
