@@ -1,3 +1,5 @@
+import { IngestError, TransportError } from './ingest_error.js';
+
 export interface ServerpodTransportOptions {
   baseUrl: string;
   apiKey: string;
@@ -40,24 +42,21 @@ export class ServerpodTransport {
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');
-      // Prefer Serverpod exception class + message when present (oversized, etc.).
+      const parsed = IngestError.parse(text);
       let detail = text.slice(0, 400);
-      try {
-        const parsed = JSON.parse(text) as {
-          className?: string;
-          message?: string;
-          exception?: string;
-        };
-        const className = parsed.className ?? parsed.exception;
-        const message = parsed.message;
-        if (className || message) {
-          detail = [className, message].filter(Boolean).join(': ');
-        }
-      } catch {
-        // keep raw text
+      const className = parsed.className;
+      const message = parsed.message;
+      if (className || message) {
+        detail = [className, message].filter(Boolean).join(': ');
       }
-      throw new Error(
+      throw new TransportError(
         `Talaria ${endpoint}/${method} failed: HTTP ${response.status}${detail ? ` — ${detail}` : ''}`,
+        {
+          status: response.status,
+          className: parsed.className,
+          retry: parsed.retry,
+          bodyMessage: parsed.message,
+        },
       );
     }
 

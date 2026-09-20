@@ -1,6 +1,7 @@
 import type { NetworkMeta } from '../replay/hooks.js';
 import { networkUrlParts } from '../replay/hooks.js';
 import type { ServerpodTransport } from '../transport/serverpod.js';
+import { IngestError } from '../transport/ingest_error.js';
 import {
   ingestSpanBatch,
   type IngestSpanParams,
@@ -36,6 +37,7 @@ export interface TracerOptions {
   userId?: string;
   getSessionId: () => string | null;
   getReplayId: () => string | null;
+  onPermanentIngestError?: (error: unknown) => void;
 }
 
 export interface StartSpanOptions {
@@ -57,6 +59,11 @@ export class Tracer {
 
   constructor(options: TracerOptions) {
     this.options = options;
+  }
+
+  disable(): void {
+    this.disabled = true;
+    this.ended.length = 0;
   }
 
   isSampled(): boolean {
@@ -94,6 +101,13 @@ export class Tracer {
   }
 
   startPageload(opts?: { name?: string; url?: string }): Span {
+    if (this.disabled) {
+      return new NoopSpan({
+        traceId: createTraceId(),
+        spanId: createSpanId(),
+        sampled: false,
+      });
+    }
     const traceId = createTraceId();
     const spanId = createSpanId();
     this.sampled = headSample(this.options.sampleRate);
@@ -229,6 +243,15 @@ export class Tracer {
     name: string,
     opts: StartSpanOptions & { parent?: SpanContext | null; context?: SpanContext },
   ): Span {
+    if (this.disabled) {
+      return new NoopSpan(
+        opts.context ?? {
+          traceId: opts.parent?.traceId ?? createTraceId(),
+          spanId: createSpanId(),
+          sampled: false,
+        },
+      );
+    }
     if (this.spanCount >= MAX_SPANS_PER_TRANSACTION) {
       return new NoopSpan(
         opts.context ?? {
@@ -305,16 +328,14 @@ export class Tracer {
     } catch (error) {
       for (const span of ready) span.data.flushed = false;
       console.warn('@newtalaria/browser: spans/ingestBatch failed', error);
-      const msg = error instanceof Error ? error.message : String(error);
-      const match = /Talaria spans\/ingestBatch failed: HTTP (\d{3})/.exec(msg);
-      const status = match ? Number(match[1]) : 0;
-      if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
+      if (IngestError.fromUnknown(error).isPermanent) {
         this.disabled = true;
         this.ended.length = 0;
         console.warn(
           '@newtalaria/browser: span ingest disabled after permanent client error',
           error,
         );
+        this.options.onPermanentIngestError?.(error);
       }
     }
   }

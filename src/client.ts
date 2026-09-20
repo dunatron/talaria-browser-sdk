@@ -40,6 +40,7 @@ import {
 } from './utils/stacktrace.js';
 import { SDK_NAME, SDK_VERSION } from './sdk_meta.js';
 import { ServerpodTransport } from './transport/serverpod.js';
+import { IngestError } from './transport/ingest_error.js';
 import { ingestEvent } from './transport/events.js';
 import {
   compressReplayEvents,
@@ -415,18 +416,11 @@ function isOversizedSegmentError(error: unknown): boolean {
 }
 
 /**
- * Event ingest failures that will not succeed on retry (bad wire payload / auth).
- * Excludes 408 / 429 so transient client limits can still recover.
+ * Event ingest failures that will not succeed on retry (dead key / project).
+ * Classify by wire `retry` + exception class — never HTTP 4xx alone.
  */
 function isPermanentIngestError(error: unknown): boolean {
-  const msg = error instanceof Error ? error.message : String(error);
-  const match = /Talaria events\/ingest(?:Batch)? failed: HTTP (\d{3})/.exec(
-    msg,
-  );
-  if (!match) return false;
-  const status = Number(match[1]);
-  if (status < 400 || status >= 500) return false;
-  return status !== 408 && status !== 429;
+  return IngestError.fromUnknown(error).isPermanent;
 }
 
 export class TalariaClient {
@@ -465,10 +459,11 @@ export class TalariaClient {
   /** Prevent ingest/replay failures from being re-captured via unhandledrejection. */
   private capturing = false;
   /**
-   * Set after a permanent events/ingest 4xx (bad env/auth/wire). Further
+   * Set after a permanent events/ingest error (dead key / project). Further
    * captures no-op so we don't spin on retries or burn error-clip replay quota.
    */
   private ingestDisabled = false;
+  private replayDisabled = false;
   /** Recent fetch/XHR transport failures for correlation + dedupe. */
   private recentNetworkFailures: RecentNetworkFailure[] = [];
   private tracer: Tracer | null = null;
@@ -490,6 +485,7 @@ export class TalariaClient {
     this.replayId = createId();
     this.closed = false;
     this.ingestDisabled = false;
+    this.replayDisabled = false;
     this.finishedOnServer = false;
     this.startedOnServer = false;
     this.segmentIndex = 0;
@@ -1268,18 +1264,41 @@ export class TalariaClient {
       // as a fake "Failed to fetch" app error (SDK stack only).
       console.warn('@newtalaria/browser: event ingest failed', error);
       if (isPermanentIngestError(error)) {
-        this.disableIngestAfterPermanentError(error);
+        this.disableIngestAfterPermanentError(error, 'events');
       }
     }
   }
 
   /**
-   * Stop further event capture (and error-clip uploads) after a permanent
-   * events/ingest 4xx so misconfig cannot spin forever.
+   * Stop further capture after a permanent ingest error (`retry: false`).
+   * Missing-scope errors disable only the failing signal.
    */
-  private disableIngestAfterPermanentError(error: unknown): void {
-    if (this.ingestDisabled) return;
+  private disableIngestAfterPermanentError(
+    error: unknown,
+    signal: 'events' | 'spans' | 'replay',
+  ): void {
+    const parsed = IngestError.fromUnknown(error);
+    if (parsed.isScopeOnly) {
+      if (signal === 'events') {
+        if (this.ingestDisabled) return;
+        this.ingestDisabled = true;
+      } else if (signal === 'spans') {
+        this.tracer?.disable();
+      } else {
+        this.replayDisabled = true;
+        this.uploadEnabled = false;
+      }
+      console.warn(
+        '@newtalaria/browser: ingest disabled for signal after missing scope',
+        signal,
+        error,
+      );
+      return;
+    }
+    if (this.ingestDisabled && this.replayDisabled) return;
     this.ingestDisabled = true;
+    this.replayDisabled = true;
+    this.tracer?.disable();
     console.warn(
       '@newtalaria/browser: event ingest disabled after permanent client error',
       error,
@@ -1298,6 +1317,8 @@ export class TalariaClient {
       });
     } else if (!this.sessionSampled) {
       this.clearErrorClipTimer();
+      this.uploadEnabled = false;
+    } else {
       this.uploadEnabled = false;
     }
   }
@@ -1572,6 +1593,9 @@ export class TalariaClient {
       userId: this.options.userId,
       getSessionId: () => this.sessionId,
       getReplayId: () => this.getReplayId(),
+      onPermanentIngestError: (error) => {
+        this.disableIngestAfterPermanentError(error, 'spans');
+      },
     });
 
     this.teardowns.push(
@@ -1817,19 +1841,27 @@ export class TalariaClient {
     if (!this.options || !this.transport || !this.replayId || !this.sessionId) {
       return;
     }
+    if (this.replayDisabled) return;
     if (this.startedOnServer || this.finishedOnServer) return;
 
-    await startReplay(this.transport, {
-      replayId: this.replayId,
-      environment: this.options.environment,
-      sessionId: this.sessionId,
-      url: currentLocation()?.href,
-      userId: this.options.userId,
-      userAgent: this.browserContext?.userAgent,
-      keepalive: opts.keepalive,
-    });
-    this.startedOnServer = true;
-    this.markUploadStarted();
+    try {
+      await startReplay(this.transport, {
+        replayId: this.replayId,
+        environment: this.options.environment,
+        sessionId: this.sessionId,
+        url: currentLocation()?.href,
+        userId: this.options.userId,
+        userAgent: this.browserContext?.userAgent,
+        keepalive: opts.keepalive,
+      });
+      this.startedOnServer = true;
+      this.markUploadStarted();
+    } catch (error) {
+      if (isPermanentIngestError(error)) {
+        this.disableIngestAfterPermanentError(error, 'replay');
+      }
+      throw error;
+    }
   }
 
   private async uploadPendingSegments(opts: {
@@ -2004,6 +2036,10 @@ export class TalariaClient {
 
         this.buffer.prepend(events);
         console.warn('@newtalaria/browser: replays/ingestSegment failed', error);
+        if (isPermanentIngestError(error)) {
+          this.disableIngestAfterPermanentError(error, 'replay');
+          break;
+        }
         if (this.segmentIndex === 0) {
           await this.abortUnusableClip('upload_failed', {
             message: error instanceof Error ? error.message : String(error),

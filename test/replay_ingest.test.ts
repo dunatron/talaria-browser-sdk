@@ -364,7 +364,7 @@ describe('event ↔ replay link after finish', () => {
 });
 
 describe('permanent ingest circuit breaker', () => {
-  it('stops further captures after HTTP 400 from events/ingest', async () => {
+  it('stops further captures after invalid API key (retry: false)', async () => {
     let ingestCalls = 0;
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -373,9 +373,9 @@ describe('permanent ingest circuit breaker', () => {
         ingestCalls += 1;
         return new Response(
           JSON.stringify({
-            error: 'Invalid or missing parameters',
-            detail:
-              'Invalid argument(s): Value "test" cannot be converted to "EnvironmentWire"',
+            __className__: 'ApiUnauthorizedException',
+            message: 'Invalid API key',
+            retry: false,
           }),
           { status: 400, headers: { 'content-type': 'application/json' } },
         );
@@ -418,6 +418,85 @@ describe('permanent ingest circuit breaker', () => {
     } finally {
       globalThis.fetch = originalFetch;
       console.warn = originalWarn;
+    }
+  });
+
+  it('does not disable ingest on quota (retry: true)', async () => {
+    let ingestCalls = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/events/ingest')) {
+        ingestCalls += 1;
+        return new Response(
+          JSON.stringify({
+            className: 'ApiConflictException',
+            message: 'quota exceeded',
+            retry: true,
+          }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    try {
+      const client = new TalariaClient();
+      client.init({
+        dsn: 'http://localhost:8080',
+        apiKey: 'tal_live_test',
+        environment: 'development',
+        replaysSessionSampleRate: 0,
+        replaysOnErrorSampleRate: 0,
+        disableDefaultIntegrations: true,
+      });
+
+      await client.captureException(new Error('boom'));
+      await client.captureException(new Error('boom again'));
+
+      assert.equal(ingestCalls, 2);
+      await client.close();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('does not disable ingest on HTTP 503', async () => {
+    let ingestCalls = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/events/ingest')) {
+        ingestCalls += 1;
+        return new Response('unavailable', { status: 503 });
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    try {
+      const client = new TalariaClient();
+      client.init({
+        dsn: 'http://localhost:8080',
+        apiKey: 'tal_live_test',
+        environment: 'development',
+        replaysSessionSampleRate: 0,
+        replaysOnErrorSampleRate: 0,
+        disableDefaultIntegrations: true,
+      });
+
+      await client.captureException(new Error('boom'));
+      await client.captureException(new Error('boom again'));
+
+      assert.equal(ingestCalls, 2);
+      await client.close();
+    } finally {
+      globalThis.fetch = originalFetch;
     }
   });
 });

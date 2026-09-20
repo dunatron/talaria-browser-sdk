@@ -26,7 +26,7 @@ Load the IIFE build from a CDN or your own static host, then call `Talaria.init`
 </script>
 ```
 
-Pin a version in production (for example `@newtalaria/browser@0.1.21`) instead of floating on `latest`.
+Pin a version in production (for example `@newtalaria/browser@0.1.25`) instead of floating on `latest`.
 
 ## Initialize (best practices)
 
@@ -63,6 +63,7 @@ Talaria.init({
 | Identity | Set `userId` when you know the signed-in user |
 | Product dims | Put stable filters in init `tags` (`service`, `platform`) |
 | Privacy | Leave `maskAllInputs: true`; mark sensitive DOM with `data-talaria-mask` |
+| Invalid key | The SDK stops sending events, spans, and replay for this page after a permanent ingest error (`retry: false`). Quota and 5xx keep sending. |
 
 `Talaria.init` installs `window.onerror` / `unhandledrejection` handlers unless you pass `disableDefaultIntegrations: true`. Opaque cross-origin `"Script error."` events, browser-extension stacks, and Sentry-class unactionable messages (`_AutofillCallbackHandler`, ResizeObserver loop, CEFSharp `simulateEvent`, …) are ignored by default. Override with `ignoreErrors` / `ignoreUrls`. Gate order: built-in noise → ignoreErrors → ignoreUrls → minLevel → sampleRate → beforeSend. Dropping an error does not stop session replay.
 
