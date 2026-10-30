@@ -11,17 +11,23 @@ globs:
 
 ## Wire contract
 
-Events: `POST {baseUrl}/events/ingest` (and batch when used). Spans: `POST {baseUrl}/spans/ingestBatch`. Replay: `replays/start`, `replays/ingestSegment`, `replays/finish`.
+Ingest host: `https://ingest-<cell>.newtalaria.com` (or `dsn` / `baseUrl`). Header: `X-API-Key` only. Plain JSON — no `input` wrapper, no `__className__`.
 
-- Header: `X-API-Key` only
-- Serverpod envelopes with `__className__`
-- Parse both `__className__` and `className` from error bodies
+| Signal | Route | Body |
+| --- | --- | --- |
+| Events | `POST /v1/events` | `{ "events": [ … ] }` |
+| Spans | `POST /v1/spans` | `{ "spans": [ … ] }` |
+| Replay start | `POST /v1/replays` | `{ replayId, sessionId?, url?, … }` |
+| Replay segments | `POST /v1/replays/segments` | `{ "segments": [ { replayId, segmentIndex, gzipBytes (base64), … } ] }` |
+| Replay finish | `POST /v1/replays/{replayId}/finish` | `{ reason? }` |
+
+Errors: `application/problem+json` with `code`, `detail`, `requestId`. Legacy Serverpod bodies (`__className__`, `retry`) are still parsed when `code` is absent.
 
 ## Permanent ingest disable
 
-Classify by JSON body `retry` + exception class, **never HTTP 401/403** (Serverpod maps ingest `ApiUnauthorizedException` to HTTP 400).
+Classify by problem `code` and `retry`, not HTTP 401/403 alone.
 
-- `retry: false` or known permanent class (`ApiUnauthorizedException`, `ApiDisallowedDomainException`, `ApiNotFoundException`, inactive project): drop the failed call, log once, disable events **and** spans **and** replay for this page lifetime
-- Quota / rate-limit (`retry: true`) and 5xx: keep sending
-- Missing scope (`lacks required scope`): disable that signal only
+- Permanent codes (`invalid_key`, `not_found`, `insufficient_scope`, …) or `retry: false`: log once, disable events **and** spans **and** replay for this page lifetime
+- Quota / rate-limit (`retry: true`, `quota_exceeded`) and 5xx: keep sending
+- Missing scope (`lacks required scope` / `insufficient_scope`): disable that signal only
 - Do not persist across a full page reload — a rotated key must work after deploy

@@ -1,4 +1,4 @@
-import type { ServerpodTransport } from './serverpod.js';
+import type { IngestTransport } from './http_transport.js';
 
 export type SpanKind = 'internal' | 'server' | 'client' | 'producer' | 'consumer';
 export type SpanStatus = 'unset' | 'ok' | 'error';
@@ -36,31 +36,23 @@ export interface IngestSpanParams {
   requestId?: string;
 }
 
-/**
- * Batch-ingest spans. Never mix with `events/ingest` — spans are a parallel path.
- *
- * `POST {baseUrl}/spans/ingestBatch` with `__className__: 'IngestSpanBatchInput'`.
- */
+/** Batch-ingest spans via `POST /v1/spans` — never mixed with `/v1/events`. */
 export async function ingestSpanBatch(
-  transport: ServerpodTransport,
+  transport: IngestTransport,
   spans: IngestSpanParams[],
   opts?: { keepalive?: boolean },
 ): Promise<unknown> {
   if (spans.length === 0) return undefined;
 
-  const input: Record<string, unknown> = {
-    __className__: 'IngestSpanBatchInput',
-    spans: spans.map(serializeSpan),
-  };
-
-  return transport.call('spans', 'ingestBatch', { input }, {
-    keepalive: opts?.keepalive,
-  });
+  return transport.postJson(
+    '/v1/spans',
+    { spans: spans.map(serializeSpan) },
+    { keepalive: opts?.keepalive, label: 'v1/spans' },
+  );
 }
 
 function serializeSpan(span: IngestSpanParams): Record<string, unknown> {
   const out: Record<string, unknown> = {
-    __className__: 'IngestSpanInput',
     traceId: span.traceId,
     spanId: span.spanId,
     name: span.name,
@@ -94,7 +86,6 @@ function serializeSpan(span: IngestSpanParams): Record<string, unknown> {
 
 function serializeSpanEvent(event: SpanEventInput): Record<string, unknown> {
   const out: Record<string, unknown> = {
-    __className__: 'SpanEventDto',
     timestamp: event.timestamp,
     name: event.name,
   };
@@ -106,7 +97,6 @@ function serializeSpanEvent(event: SpanEventInput): Record<string, unknown> {
 
 function serializeSpanLink(link: SpanLinkInput): Record<string, unknown> {
   return {
-    __className__: 'SpanLinkDto',
     traceId: link.traceId,
     spanId: link.spanId,
   };

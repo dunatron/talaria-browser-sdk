@@ -189,7 +189,7 @@ export interface TalariaInitOptions {
    */
   inAppOrigins?: string[];
   /**
-   * Enable pageload + fetch/XHR tracing (`spans/ingestBatch`).
+   * Enable pageload + fetch/XHR tracing (`POST /v1/spans`).
    * Off until this is `true` **or** `tracesSampleRate > 0`.
    * Explicit `false` disables tracing even if a sample rate is set.
    */

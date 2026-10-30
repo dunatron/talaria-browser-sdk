@@ -1,9 +1,20 @@
 /** Which ingest path a permanent error applies to. */
 export type IngestSignal = 'events' | 'spans' | 'replay';
 
-/** Thrown by {@link ServerpodTransport} when an ingest RPC fails. */
+const PERMANENT_CODES = new Set([
+  'invalid_key',
+  'not_found',
+  'insufficient_scope',
+  'invalid_scope',
+  'wrong_cell',
+  'invalid_body',
+  'invalid_release',
+]);
+
+/** Thrown by {@link IngestTransport} when an ingest request fails. */
 export class TransportError extends Error {
   readonly status: number;
+  readonly code: string | null;
   readonly className: string | null;
   readonly retry: boolean | null;
   readonly bodyMessage: string | null;
@@ -12,6 +23,7 @@ export class TransportError extends Error {
     message: string,
     opts: {
       status: number;
+      code?: string | null;
       className?: string | null;
       retry?: boolean | null;
       bodyMessage?: string | null;
@@ -20,6 +32,7 @@ export class TransportError extends Error {
     super(message);
     this.name = 'TransportError';
     this.status = opts.status;
+    this.code = opts.code ?? null;
     this.className = opts.className ?? null;
     this.retry = opts.retry ?? null;
     this.bodyMessage = opts.bodyMessage ?? null;
@@ -28,15 +41,18 @@ export class TransportError extends Error {
 
 /** Classification of a Talaria ingest HTTP error body. */
 export class IngestError {
+  readonly code: string | null;
   readonly className: string | null;
   readonly message: string | null;
   readonly retry: boolean | null;
 
   constructor(opts?: {
+    code?: string | null;
     className?: string | null;
     message?: string | null;
     retry?: boolean | null;
   }) {
+    this.code = opts?.code ?? null;
     this.className = opts?.className ?? null;
     this.message = opts?.message ?? null;
     this.retry = opts?.retry ?? null;
@@ -49,15 +65,33 @@ export class IngestError {
         return new IngestError();
       }
       const map = decoded as Record<string, unknown>;
+      const code = stringOf(map.code);
+      if (code) {
+        let retry: boolean | null = null;
+        if (PERMANENT_CODES.has(code)) {
+          retry = false;
+        } else if (code === 'rate_limited' || code === 'quota_exceeded') {
+          retry = true;
+        }
+        return new IngestError({
+          code,
+          message: stringOf(map.detail ?? map.title ?? map.message),
+          retry,
+        });
+      }
+
       const nested =
         map.data && typeof map.data === 'object'
           ? (map.data as Record<string, unknown>)
           : {};
       return new IngestError({
         className: stringOf(
-          map.__className__ ?? map.className ?? map.exception ?? nested.__className__,
+          map.__className__ ??
+            map.className ??
+            map.exception ??
+            nested.__className__,
         ),
-        message: stringOf(map.message ?? nested.message),
+        message: stringOf(map.message ?? nested.message ?? map.detail),
         retry: boolOf(map.retry ?? nested.retry),
       });
     } catch {
@@ -68,6 +102,7 @@ export class IngestError {
   static fromUnknown(error: unknown): IngestError {
     if (error instanceof TransportError) {
       return new IngestError({
+        code: error.code,
         className: error.className,
         message: error.bodyMessage,
         retry: error.retry,
@@ -82,6 +117,10 @@ export class IngestError {
    */
   get isPermanent(): boolean {
     if (this.retry === true) return false;
+    if (this.code != null && PERMANENT_CODES.has(this.code)) return true;
+    if (this.code === 'rate_limited' || this.code === 'quota_exceeded') {
+      return false;
+    }
     if (this.retry === false) return true;
     const name = this.className ?? '';
     if (name.includes('ApiUnauthorizedException')) return true;
@@ -98,6 +137,7 @@ export class IngestError {
 
   /** Missing a single scope — disable that signal only. */
   get isScopeOnly(): boolean {
+    if (this.code === 'insufficient_scope') return true;
     return (this.message ?? '').toLowerCase().includes('lacks required scope');
   }
 }

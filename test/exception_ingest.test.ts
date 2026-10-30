@@ -35,16 +35,15 @@ describe('captureException exception payload', () => {
       await client.close();
 
       assert.ok(body);
-      const input = body!.input as Record<string, unknown>;
+      const events = body!.events as Array<Record<string, unknown>>;
+      const input = events[0]!;
       assert.equal(input.platform, 'javascript');
       assert.equal(typeof input.stackTrace, 'string');
       assert.ok(input.exception);
 
       const exception = input.exception as {
-        __className__: string;
         values: Array<Record<string, unknown>>;
       };
-      assert.equal(exception.__className__, 'ExceptionDataDto');
       assert.equal(exception.values.length, 1);
       assert.equal(exception.values[0]!.type, 'TypeError');
       assert.equal(exception.values[0]!.value, 'something broke');
@@ -108,7 +107,7 @@ describe('captureException exception payload', () => {
       });
       await client.close();
 
-      const input = body!.input as Record<string, unknown>;
+      const input = (body!.events as Array<Record<string, unknown>>)[0]!;
       const extra = JSON.parse(String(input.extraJson ?? '{}')) as Record<
         string,
         unknown
@@ -151,7 +150,7 @@ describe('captureException exception payload', () => {
       });
       await client.close();
 
-      const input = body!.input as Record<string, unknown>;
+      const input = (body!.events as Array<Record<string, unknown>>)[0]!;
       assert.equal(input.platform, 'javascript');
       const exception = input.exception as {
         values: Array<{ mechanism?: { type?: string; handled?: boolean } }>;
@@ -188,7 +187,7 @@ describe('captureException exception payload', () => {
       await client.captureMessage('hello from logger');
       await client.close();
 
-      const input = body!.input as Record<string, unknown>;
+      const input = (body!.events as Array<Record<string, unknown>>)[0]!;
       assert.equal(input.platform, 'javascript');
       assert.equal(input.message, 'hello from logger');
     } finally {

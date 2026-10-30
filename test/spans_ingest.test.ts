@@ -1,15 +1,20 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { ServerpodTransport } from '../src/transport/serverpod.ts';
+import { IngestTransport } from '../src/transport/http_transport.ts';
 import { ingestSpanBatch } from '../src/transport/spans.ts';
 
-describe('spans/ingestBatch transport', () => {
-  it('POSTs IngestSpanBatchInput and does not use events/ingest', async () => {
+describe('POST /v1/spans transport', () => {
+  it('POSTs plain JSON spans batch and does not use /v1/events', async () => {
     let url = '';
     let body: Record<string, unknown> | null = null;
+    let apiKey = '';
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       url = String(input);
+      apiKey = String(
+        (init?.headers as Record<string, string> | undefined)?.['X-API-Key'] ??
+          '',
+      );
       body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
       return new Response(JSON.stringify({ acceptedCount: 1, failedCount: 0, failures: [] }), {
         status: 200,
@@ -18,9 +23,9 @@ describe('spans/ingestBatch transport', () => {
     }) as typeof fetch;
 
     try {
-      const transport = new ServerpodTransport({
-        baseUrl: 'http://localhost:8080',
-        apiKey: 'tal_live_test',
+      const transport = new IngestTransport({
+        baseUrl: 'https://ingest-nz1.newtalaria.com',
+        apiKey: 'tal_pk_test_nz1_key',
       });
       await ingestSpanBatch(transport, [
         {
@@ -42,19 +47,18 @@ describe('spans/ingestBatch transport', () => {
         },
       ]);
 
-      assert.equal(url, 'http://localhost:8080/spans/ingestBatch');
-      assert.equal(url.includes('/events/'), false);
-      const input = body!.input as Record<string, unknown>;
-      assert.equal(input.__className__, 'IngestSpanBatchInput');
-      const spans = input.spans as Array<Record<string, unknown>>;
+      assert.equal(url, 'https://ingest-nz1.newtalaria.com/v1/spans');
+      assert.equal(url.includes('/v1/events'), false);
+      assert.equal(apiKey, 'tal_pk_test_nz1_key');
+      assert.equal(JSON.stringify(body).includes('__className__'), false);
+      const spans = body!.spans as Array<Record<string, unknown>>;
       assert.equal(spans.length, 1);
-      assert.equal(spans[0]!.__className__, 'IngestSpanInput');
       assert.equal(spans[0]!.traceId, 'a'.repeat(32));
       assert.equal(spans[0]!.kind, 'internal');
       assert.equal(spans[0]!.status, 'ok');
       const events = spans[0]!.events as Array<Record<string, unknown>>;
-      assert.equal(events[0]!.__className__, 'SpanEventDto');
       assert.equal(events[0]!.name, 'lcp');
+      assert.equal(JSON.stringify(events[0]).includes('SpanEventDto'), false);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -68,7 +72,7 @@ describe('spans/ingestBatch transport', () => {
       return new Response('{}', { status: 200 });
     }) as typeof fetch;
     try {
-      const transport = new ServerpodTransport({
+      const transport = new IngestTransport({
         baseUrl: 'http://localhost:8080',
         apiKey: 'tal_live_test',
       });

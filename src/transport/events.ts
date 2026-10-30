@@ -1,4 +1,4 @@
-import type { ServerpodTransport } from './serverpod.js';
+import type { IngestTransport } from './http_transport.js';
 import type {
   DebugMeta,
   ExceptionData,
@@ -38,50 +38,79 @@ export interface IngestEventParams {
 }
 
 export async function ingestEvent(
-  transport: ServerpodTransport,
+  transport: IngestTransport,
   params: IngestEventParams,
 ): Promise<unknown> {
-  const input: Record<string, unknown> = {
-    __className__: 'IngestEventInput',
+  const event = serializeEvent(params);
+  return transport.postJson(
+    '/v1/events',
+    { events: [event] },
+    { keepalive: params.keepalive, label: 'v1/events' },
+  );
+}
+
+function serializeEvent(params: IngestEventParams): Record<string, unknown> {
+  const wire: Record<string, unknown> = {
     message: params.message,
-    environment: params.environment,
+    level: params.level ?? 'error',
+    eventType: params.eventType ?? levelToEventType(params.level ?? 'error'),
   };
 
-  if (params.level) input.level = params.level;
-  if (params.eventType) input.eventType = params.eventType;
-  if (params.title) input.title = params.title;
-  if (params.stackTrace) input.stackTrace = params.stackTrace;
-  if (params.exception) input.exception = serializeException(params.exception);
-  if (params.debugMeta) input.debugMeta = serializeDebugMeta(params.debugMeta);
-  if (params.platform) input.platform = params.platform;
-  if (params.release) input.release = params.release;
-  if (params.commitSha) input.commitSha = params.commitSha;
-  if (params.userId) input.userId = params.userId;
-  if (params.sessionId) input.sessionId = params.sessionId;
-  if (params.replayId) input.replayId = params.replayId;
-  if (params.requestId) input.requestId = params.requestId;
-  if (params.url) input.url = params.url;
-  if (params.tags) input.tags = params.tags;
-  if (params.extraJson) input.extraJson = params.extraJson;
-  if (params.userAgent) input.userAgent = params.userAgent;
-  if (params.timestamp) input.timestamp = params.timestamp;
-  if (params.traceId) input.traceId = params.traceId;
-  if (params.spanId) input.spanId = params.spanId;
+  put(wire, 'title', params.title);
+  put(wire, 'stackTrace', params.stackTrace);
+  if (params.exception) put(wire, 'exception', serializeException(params.exception));
+  if (params.debugMeta) put(wire, 'debugMeta', serializeDebugMeta(params.debugMeta));
+  put(wire, 'platform', params.platform);
+  put(wire, 'release', params.release);
+  put(wire, 'commitSha', params.commitSha);
+  put(wire, 'userId', params.userId);
+  put(wire, 'sessionId', params.sessionId);
+  put(wire, 'replayId', params.replayId);
+  put(wire, 'requestId', params.requestId);
+  put(wire, 'url', params.url);
+  put(wire, 'tags', params.tags);
+  put(wire, 'extraJson', params.extraJson);
+  put(wire, 'userAgent', params.userAgent);
+  put(wire, 'timestamp', params.timestamp);
+  put(wire, 'traceId', params.traceId);
+  put(wire, 'spanId', params.spanId);
   if (params.breadcrumbs && params.breadcrumbs.length) {
-    input.breadcrumbs = params.breadcrumbs.map(serializeBreadcrumb);
+    wire.breadcrumbs = params.breadcrumbs.map(serializeBreadcrumb);
   }
 
-  return transport.call(
-    'events',
-    'ingest',
-    { input },
-    { keepalive: params.keepalive },
-  );
+  return wire;
+}
+
+function levelToEventType(level: SeverityLevel): 'error' | 'warning' | 'info' | 'debug' {
+  switch (level) {
+    case 'fatal':
+    case 'error':
+      return 'error';
+    case 'warning':
+      return 'warning';
+    case 'info':
+      return 'info';
+    case 'debug':
+    default:
+      return 'debug';
+  }
+}
+
+function put(
+  target: Record<string, unknown>,
+  key: string,
+  value: unknown,
+): void {
+  if (value == null) return;
+  if (typeof value === 'string' && value === '') return;
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    if (Object.keys(value as object).length === 0) return;
+  }
+  target[key] = value;
 }
 
 function serializeBreadcrumb(crumb: Breadcrumb): Record<string, unknown> {
   const out: Record<string, unknown> = {
-    __className__: 'BreadcrumbDto',
     timestamp: crumb.timestamp,
     type: crumb.type,
   };
@@ -94,7 +123,6 @@ function serializeBreadcrumb(crumb: Breadcrumb): Record<string, unknown> {
 
 function serializeException(data: ExceptionData): Record<string, unknown> {
   return {
-    __className__: 'ExceptionDataDto',
     values: data.values.map(serializeExceptionValue),
   };
 }
@@ -102,9 +130,7 @@ function serializeException(data: ExceptionData): Record<string, unknown> {
 function serializeExceptionValue(
   value: ExceptionValue,
 ): Record<string, unknown> {
-  const out: Record<string, unknown> = {
-    __className__: 'ExceptionValueDto',
-  };
+  const out: Record<string, unknown> = {};
   if (value.type != null) out.type = value.type;
   if (value.value != null) out.value = value.value;
   if (value.module != null) out.module = value.module;
@@ -119,7 +145,6 @@ function serializeMechanism(
   mechanism: ExceptionMechanism,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {
-    __className__: 'ExceptionMechanismDto',
     type: mechanism.type,
   };
   if (mechanism.handled != null) out.handled = mechanism.handled;
@@ -129,7 +154,6 @@ function serializeMechanism(
 
 function serializeStackTrace(stack: StackTrace): Record<string, unknown> {
   const out: Record<string, unknown> = {
-    __className__: 'StackTraceDto',
     frames: stack.frames.map(serializeStackFrame),
   };
   if (stack.registers) out.registers = stack.registers;
@@ -137,9 +161,7 @@ function serializeStackTrace(stack: StackTrace): Record<string, unknown> {
 }
 
 function serializeStackFrame(frame: StackFrame): Record<string, unknown> {
-  const out: Record<string, unknown> = {
-    __className__: 'StackFrameDto',
-  };
+  const out: Record<string, unknown> = {};
   if (frame.filename != null) out.filename = frame.filename;
   if (frame.absPath != null) out.absPath = frame.absPath;
   if (frame.functionName != null) out.functionName = frame.functionName;
@@ -163,14 +185,10 @@ function serializeStackFrame(frame: StackFrame): Record<string, unknown> {
 }
 
 function serializeDebugMeta(meta: DebugMeta): Record<string, unknown> {
-  const out: Record<string, unknown> = {
-    __className__: 'DebugMetaDto',
-  };
+  const out: Record<string, unknown> = {};
   if (meta.images) {
     out.images = meta.images.map((image) => {
-      const img: Record<string, unknown> = {
-        __className__: 'DebugImageDto',
-      };
+      const img: Record<string, unknown> = {};
       if (image.type != null) img.type = image.type;
       if (image.imageAddr != null) img.imageAddr = image.imageAddr;
       if (image.imageSize != null) img.imageSize = image.imageSize;

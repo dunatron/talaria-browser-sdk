@@ -1,5 +1,5 @@
-import type { ServerpodTransport } from './serverpod.js';
-import { gzipBytes, toServerpodByteData } from '../utils/gzip.js';
+import type { IngestTransport } from './http_transport.js';
+import { bytesToBase64, gzipBytes } from '../utils/gzip.js';
 import { MAX_COMPRESSED_SEGMENT_BYTES } from '../replay/segment_buffer.js';
 
 export interface StartReplayParams {
@@ -37,29 +37,25 @@ export async function compressReplayEvents(
 }
 
 export async function startReplay(
-  transport: ServerpodTransport,
+  transport: IngestTransport,
   params: StartReplayParams,
 ): Promise<unknown> {
-  const input: Record<string, unknown> = {
-    __className__: 'StartReplayInput',
+  const body: Record<string, unknown> = {
     replayId: params.replayId,
-    environment: params.environment,
   };
-  if (params.sessionId) input.sessionId = params.sessionId;
-  if (params.url) input.url = params.url;
-  if (params.userId) input.userId = params.userId;
-  if (params.userAgent) input.userAgent = params.userAgent;
+  if (params.sessionId) body.sessionId = params.sessionId;
+  if (params.url) body.url = params.url;
+  if (params.userId) body.userId = params.userId;
+  if (params.userAgent) body.userAgent = params.userAgent;
 
-  return transport.call(
-    'replays',
-    'start',
-    { input },
-    { keepalive: params.keepalive },
-  );
+  return transport.postJson('/v1/replays', body, {
+    keepalive: params.keepalive,
+    label: 'v1/replays',
+  });
 }
 
 export async function ingestReplaySegment(
-  transport: ServerpodTransport,
+  transport: IngestTransport,
   params: IngestSegmentParams,
 ): Promise<unknown> {
   const compressed =
@@ -67,42 +63,36 @@ export async function ingestReplaySegment(
 
   if (compressed.length > MAX_COMPRESSED_SEGMENT_BYTES) {
     throw new Error(
-      `Talaria replays/ingestSegment failed: HTTP 400 — segment exceeds max compressed size (${compressed.length} > ${MAX_COMPRESSED_SEGMENT_BYTES})`,
+      `Talaria v1/replays/segments failed: HTTP 400 — segment exceeds max compressed size (${compressed.length} > ${MAX_COMPRESSED_SEGMENT_BYTES})`,
     );
   }
 
-  const input = {
-    __className__: 'IngestReplaySegmentInput',
+  const segment = {
     replayId: params.replayId,
     segmentIndex: params.segmentIndex,
-    gzipBytes: toServerpodByteData(compressed),
+    gzipBytes: bytesToBase64(compressed),
     eventCount: params.events.length,
     startedAt: params.startedAt.toISOString(),
     endedAt: params.endedAt.toISOString(),
   };
 
-  return transport.call(
-    'replays',
-    'ingestSegment',
-    { input },
-    { keepalive: params.keepalive },
+  return transport.postJson(
+    '/v1/replays/segments',
+    { segments: [segment] },
+    { keepalive: params.keepalive, label: 'v1/replays/segments' },
   );
 }
 
 export async function finishReplay(
-  transport: ServerpodTransport,
+  transport: IngestTransport,
   params: FinishReplayParams,
 ): Promise<unknown> {
-  const input: Record<string, unknown> = {
-    __className__: 'FinishReplayInput',
-    replayId: params.replayId,
-  };
-  if (params.reason) input.reason = params.reason;
+  const body: Record<string, unknown> = {};
+  if (params.reason) body.reason = params.reason;
 
-  return transport.call(
-    'replays',
-    'finish',
-    { input },
-    { keepalive: params.keepalive },
+  return transport.postJson(
+    `/v1/replays/${encodeURIComponent(params.replayId)}/finish`,
+    body,
+    { keepalive: params.keepalive, label: 'v1/replays/finish' },
   );
 }

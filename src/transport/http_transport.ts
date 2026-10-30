@@ -1,41 +1,40 @@
 import { IngestError, TransportError } from './ingest_error.js';
 
-export interface ServerpodTransportOptions {
+export interface IngestTransportOptions {
   baseUrl: string;
   apiKey: string;
 }
 
 /**
- * Minimal Serverpod RPC client: POST `{baseUrl}/{endpoint}/{method}` with
- * named JSON parameters and API-key auth.
+ * Minimal HTTP client for Talaria ingest `POST /v1/...` routes.
+ * Auth: `X-API-Key` (browser publishable keys).
  */
-export class ServerpodTransport {
+export class IngestTransport {
   private readonly baseUrl: string;
   private readonly apiKey: string;
 
-  constructor(options: ServerpodTransportOptions) {
+  constructor(options: IngestTransportOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.apiKey = options.apiKey;
   }
 
-  async call(
-    endpoint: string,
-    method: string,
-    body: Record<string, unknown>,
-    opts?: { keepalive?: boolean },
+  async postJson(
+    path: string,
+    payload: Record<string, unknown>,
+    opts?: { keepalive?: boolean; label?: string },
   ): Promise<unknown> {
-    const url = `${this.baseUrl}/${endpoint}/${method}`;
+    const normalized = path.startsWith('/') ? path : `/${path}`;
+    const url = `${this.baseUrl}${normalized}`;
+    const label = opts?.label ?? normalized.replace(/^\//, '');
     const headers: Record<string, string> = {
       'Content-Type': 'application/json; charset=utf-8',
-      // Single auth header — dual headers widen CORS preflight and break older
-      // Serverpod allow-lists that omit X-API-Key.
       'X-API-Key': this.apiKey,
     };
 
     const response = await fetch(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify(body),
+      body: JSON.stringify(payload),
       keepalive: opts?.keepalive ?? false,
       credentials: 'omit',
     });
@@ -44,15 +43,18 @@ export class ServerpodTransport {
       const text = await response.text().catch(() => '');
       const parsed = IngestError.parse(text);
       let detail = text.slice(0, 400);
-      const className = parsed.className;
+      const code = parsed.code;
       const message = parsed.message;
-      if (className || message) {
-        detail = [className, message].filter(Boolean).join(': ');
+      if (code || message) {
+        detail = [code, message].filter(Boolean).join(': ');
+      } else if (parsed.className) {
+        detail = [parsed.className, message].filter(Boolean).join(': ');
       }
       throw new TransportError(
-        `Talaria ${endpoint}/${method} failed: HTTP ${response.status}${detail ? ` — ${detail}` : ''}`,
+        `Talaria ${label} failed: HTTP ${response.status}${detail ? ` — ${detail}` : ''}`,
         {
           status: response.status,
+          code: parsed.code,
           className: parsed.className,
           retry: parsed.retry,
           bodyMessage: parsed.message,
@@ -62,7 +64,9 @@ export class ServerpodTransport {
 
     const contentType = response.headers.get('content-type') ?? '';
     if (contentType.includes('application/json')) {
-      return response.json();
+      const text = await response.text();
+      if (!text.trim()) return undefined;
+      return JSON.parse(text);
     }
     return undefined;
   }

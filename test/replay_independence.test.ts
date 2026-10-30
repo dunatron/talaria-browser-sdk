@@ -39,7 +39,7 @@ describe('replay independence', () => {
         true,
       );
       assert.equal(
-        calls.some((url) => url.includes('events/ingest')),
+        calls.some((url) => url.includes('/v1/events')),
         false,
       );
       // Session recording is independent of error filters. A sampled session
@@ -49,7 +49,7 @@ describe('replay independence', () => {
 
       await client.close();
       assert.equal(
-        calls.some((url) => url.includes('events/ingest')),
+        calls.some((url) => url.includes('/v1/events')),
         false,
       );
     } finally {

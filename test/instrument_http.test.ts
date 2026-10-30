@@ -34,7 +34,7 @@ describe('shouldInjectTraceparent', () => {
 
   it('never injects on Talaria span/event ingest URLs', () => {
     assert.equal(
-      shouldInjectTraceparent('https://api.newtalaria.com/spans/ingestBatch', {
+      shouldInjectTraceparent('https://api.newtalaria.com/v1/spans', {
         networkErrorOrigins: ['*'],
         pageOrigin: PAGE,
         talariaBaseUrl: 'https://api.newtalaria.com',
@@ -42,7 +42,7 @@ describe('shouldInjectTraceparent', () => {
       false,
     );
     assert.equal(
-      shouldInjectTraceparent('https://api.newtalaria.com/events/ingest', {
+      shouldInjectTraceparent('https://api.newtalaria.com/v1/events', {
         networkErrorOrigins: ['*'],
         pageOrigin: PAGE,
         talariaBaseUrl: 'https://api.newtalaria.com',

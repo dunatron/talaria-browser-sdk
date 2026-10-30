@@ -1,6 +1,6 @@
 import type { NetworkMeta } from '../replay/hooks.js';
 import { networkUrlParts } from '../replay/hooks.js';
-import type { ServerpodTransport } from '../transport/serverpod.js';
+import type { IngestTransport } from '../transport/http_transport.js';
 import { IngestError } from '../transport/ingest_error.js';
 import {
   ingestSpanBatch,
@@ -29,7 +29,7 @@ export const MAX_SPANS_PER_TRANSACTION = 200;
 const AUTO_FLUSH_ENDED = 16;
 
 export interface TracerOptions {
-  transport: ServerpodTransport;
+  transport: IngestTransport;
   sampleRate: number;
   resource: Record<string, string>;
   environment: string;
@@ -327,7 +327,7 @@ export class Tracer {
       });
     } catch (error) {
       for (const span of ready) span.data.flushed = false;
-      console.warn('@newtalaria/browser: spans/ingestBatch failed', error);
+      console.warn('@newtalaria/browser: v1/spans failed', error);
       if (IngestError.fromUnknown(error).isPermanent) {
         this.disabled = true;
         this.ended.length = 0;

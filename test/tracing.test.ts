@@ -72,12 +72,12 @@ describe('browser tracing', () => {
       await client.captureException(new Error('boom'));
       await client.close();
       assert.equal(
-        calls.some((c) => c.url.includes('/spans/')),
+        calls.some((c) => c.url.includes('/v1/spans')),
         false,
       );
-      const event = calls.find((c) => c.url.includes('/events/ingest'));
+      const event = calls.find((c) => c.url.includes('/v1/events'));
       assert.ok(event);
-      const input = event!.body.input as Record<string, unknown>;
+      const input = (event!.body.events as Array<Record<string, unknown>>)[0]!;
       assert.equal(input.traceId, undefined);
     } finally {
       restore();
@@ -118,21 +118,19 @@ describe('browser tracing', () => {
         await client.captureException(new Error('checkout failed'));
         await client.close();
 
-        const event = calls.find((c) => c.url.includes('/events/ingest'));
+        const event = calls.find((c) => c.url.includes('/v1/events'));
         assert.ok(event);
-        const eventInput = event!.body.input as Record<string, unknown>;
+        const eventInput = (event!.body.events as Array<Record<string, unknown>>)[0]!;
         assert.equal(typeof eventInput.traceId, 'string');
         assert.equal(String(eventInput.traceId).length, 32);
         const crumbs = eventInput.breadcrumbs as Array<Record<string, unknown>>;
         assert.ok(Array.isArray(crumbs));
         assert.ok(crumbs.some((c) => c.category === 'fetch' && c.type === 'http'));
-        assert.equal(crumbs[0]!.__className__, 'BreadcrumbDto');
+        assert.equal(JSON.stringify(crumbs[0]).includes('__className__'), false);
 
-        const spanCall = calls.find((c) => c.url.endsWith('/spans/ingestBatch'));
+        const spanCall = calls.find((c) => c.url.endsWith('/v1/spans'));
         assert.ok(spanCall);
-        const spanInput = spanCall!.body.input as Record<string, unknown>;
-        assert.equal(spanInput.__className__, 'IngestSpanBatchInput');
-        const spans = spanInput.spans as Array<Record<string, unknown>>;
+        const spans = spanCall!.body.spans as Array<Record<string, unknown>>;
         assert.ok(spans.length >= 1);
         assert.equal(
           spans.some((s) => s.name === '/checkout' || s.name === 'pageload'),
@@ -145,7 +143,7 @@ describe('browser tracing', () => {
         assert.equal(attrs['http.request.method'], 'GET');
         assert.equal(attrs['http.method'], undefined);
         assert.equal(
-          spanCall!.url.includes('/events/'),
+          spanCall!.url.includes('/v1/events'),
           false,
         );
       } finally {

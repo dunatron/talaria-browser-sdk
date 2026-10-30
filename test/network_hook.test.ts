@@ -234,7 +234,7 @@ describe('shouldPromoteFailedRequest', () => {
       shouldPromoteFailedRequest(
         {
           method: 'POST',
-          url: 'https://api.example.com/events/ingest',
+          url: 'https://api.example.com/v1/events',
           origin: 'https://api.example.com',
           status: 500,
           ok: false,
@@ -737,7 +737,7 @@ describe('installNetworkHook fetch wrapper', () => {
 
     try {
       await assert.rejects(() =>
-        fetch('https://api.example.com/events/ingest'),
+        fetch('https://api.example.com/v1/events'),
       );
       assert.equal(promoted.length, 0);
     } finally {

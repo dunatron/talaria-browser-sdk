@@ -245,14 +245,22 @@ export function buildFailedRequestIgnoreUrls(
   const ignore = [...failedRequestIgnoreUrls];
   const base = (talariaBaseUrl ?? '').replace(/\/+$/, '');
   if (base) {
-    ignore.push(`${base}/events/`, `${base}/replays/`, `${base}/spans/`);
+    ignore.push(
+      `${base}/v1/events`,
+      `${base}/v1/spans`,
+      `${base}/v1/replays`,
+      `${base}/v1/analytics`,
+      `${base}/v1/heatmaps`,
+      `${base}/v1/screen-heatmaps`,
+    );
   }
-  // Relative or absolute Talaria RPC paths
   ignore.push(
-    '/events/ingest',
-    '/events/ingestBatch',
-    '/replays/',
-    '/spans/',
+    '/v1/events',
+    '/v1/spans',
+    '/v1/replays',
+    '/v1/analytics',
+    '/v1/heatmaps',
+    '/v1/screen-heatmaps',
   );
   return ignore;
 }

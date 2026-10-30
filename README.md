@@ -286,7 +286,7 @@ Query strings are stripped from network telemetry by default. Bodies and auth he
 
 ## Tracing (performance)
 
-Tracing is **off** until you set `enableTracing: true` or `tracesSampleRate > 0`. Spans are a parallel ingest path (`POST /spans/ingestBatch`) — they are never mixed into `events/ingest`. Browser keys need the `spansWrite` scope; auth is the same `X-API-Key` header.
+Tracing is **off** until you set `enableTracing: true` or `tracesSampleRate > 0`. Spans use `POST /v1/spans` on the ingest host — they are never mixed into `/v1/events`. Browser keys need the `spans:write` scope; auth is `X-API-Key`.
 
 Sampling is **head-based**: successful pageload transactions use `tracesSampleRate` (default **10%** once tracing is on). Transactions that contain an error are always kept.
 

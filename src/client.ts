@@ -36,7 +36,7 @@ import {
   type InAppFrameOptions,
 } from './utils/stacktrace.js';
 import { SDK_NAME, SDK_VERSION } from './sdk_meta.js';
-import { ServerpodTransport } from './transport/serverpod.js';
+import { IngestTransport } from './transport/http_transport.js';
 import { IngestError } from './transport/ingest_error.js';
 import { ingestEvent } from './transport/events.js';
 import {
@@ -422,7 +422,7 @@ function isPermanentIngestError(error: unknown): boolean {
 
 export class TalariaClient {
   private options: ResolvedOptions | null = null;
-  private transport: ServerpodTransport | null = null;
+  private transport: IngestTransport | null = null;
   private replayId: string | null = null;
   private sessionId: string | null = null;
   private recorder: RecorderHandle | null = null;
@@ -474,7 +474,7 @@ export class TalariaClient {
     }
 
     this.options = resolveOptions(options);
-    this.transport = new ServerpodTransport({
+    this.transport = new IngestTransport({
       baseUrl: this.options.baseUrl,
       apiKey: this.options.apiKey,
     });
@@ -2032,7 +2032,7 @@ export class TalariaClient {
         }
 
         this.buffer.prepend(events);
-        console.warn('@newtalaria/browser: replays/ingestSegment failed', error);
+        console.warn('@newtalaria/browser: v1/replays/segments failed', error);
         if (isPermanentIngestError(error)) {
           this.disableIngestAfterPermanentError(error, 'replay');
           break;
@@ -2149,7 +2149,7 @@ export class TalariaClient {
       });
       this.finishedOnServer = true;
     } catch (error) {
-      console.warn('@newtalaria/browser: replays/finish failed', error);
+      console.warn('@newtalaria/browser: v1/replays/finish failed', error);
     }
   }
 }

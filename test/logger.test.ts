@@ -4,8 +4,12 @@ import { TalariaClient } from '../src/client.ts';
 import type { BeforeSendEvent } from '../src/types.ts';
 
 type IngestBody = {
-  input?: Record<string, unknown>;
+  events?: Array<Record<string, unknown>>;
 };
+
+function firstEvent(body: IngestBody): Record<string, unknown> | undefined {
+  return body.events?.[0];
+}
 
 function installFetchCapture(): {
   bodies: IngestBody[];
@@ -15,7 +19,7 @@ function installFetchCapture(): {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(_input);
-    if (url.includes('/events/')) {
+    if (url.includes('/v1/events')) {
       bodies.push(JSON.parse(String(init?.body ?? '{}')) as IngestBody);
     }
     return new Response(JSON.stringify({}), {
@@ -57,7 +61,7 @@ describe('logger API', () => {
       await client.error('hello-error');
       await client.close();
 
-      const levels = bodies.map((b) => b.input?.level);
+      const levels = bodies.map((b) => firstEvent(b)?.level);
       assert.deepEqual(levels, ['info', 'warning', 'error']);
     } finally {
       restore();
@@ -74,7 +78,7 @@ describe('logger API', () => {
       await client.error('e');
       await client.close();
 
-      const messages = bodies.map((b) => b.input?.message);
+      const messages = bodies.map((b) => firstEvent(b)?.message);
       assert.deepEqual(messages, ['w', 'e']);
     } finally {
       restore();
@@ -108,7 +112,7 @@ describe('logger API', () => {
       await client.close();
 
       assert.equal(bodies.length, 1);
-      assert.equal(bodies[0]!.input?.message, 'mutated:keep-me');
+      assert.equal(firstEvent(bodies[0]!)?.message, 'mutated:keep-me');
     } finally {
       restore();
     }
@@ -131,7 +135,7 @@ describe('logger API', () => {
 
       assert.equal(called, 1);
       assert.equal(bodies.length, 1);
-      assert.equal(bodies[0]!.input?.message, 'sent');
+      assert.equal(firstEvent(bodies[0]!)?.message, 'sent');
     } finally {
       restore();
     }
@@ -161,10 +165,10 @@ describe('logger API', () => {
       await weakened.info('info-from-weakened');
       await client.close();
 
-      const messages = bodies.map((b) => b.input?.message);
+      const messages = bodies.map((b) => firstEvent(b)?.message);
       assert.deepEqual(messages, ['warn-ok', 'err-ok', 'info-from-weakened']);
 
-      const errTags = bodies[1]!.input?.tags as Record<string, string>;
+      const errTags = firstEvent(bodies[1]!)?.tags as Record<string, string>;
       assert.equal(errTags.feature, 'blog');
       assert.equal(errTags.component, 'x');
     } finally {
@@ -190,9 +194,9 @@ describe('logger API', () => {
       await client.info('direct-dropped');
       await client.close();
 
-      const messages = bodies.map((b) => b.input?.message);
+      const messages = bodies.map((b) => firstEvent(b)?.message);
       assert.deepEqual(messages, ['bd-info']);
-      const tags = bodies[0]!.input?.tags as Record<string, string>;
+      const tags = firstEvent(bodies[0]!)?.tags as Record<string, string>;
       assert.equal(tags.area, 'businessDirectory');
     } finally {
       restore();
@@ -215,7 +219,7 @@ describe('logger API', () => {
       await client.close();
 
       assert.deepEqual(
-        bodies.map((b) => b.input?.message),
+        bodies.map((b) => firstEvent(b)?.message),
         ['kept'],
       );
     } finally {
@@ -247,8 +251,8 @@ describe('logger API', () => {
       await client.close();
 
       assert.equal(bodies.length, 1);
-      assert.equal(bodies[0]!.input?.message, 'named-info');
-      const tags = bodies[0]!.input?.tags as Record<string, string>;
+      assert.equal(firstEvent(bodies[0]!)?.message, 'named-info');
+      const tags = firstEvent(bodies[0]!)?.tags as Record<string, string>;
       assert.equal(tags.area, 'businessDirectory');
       assert.equal(tags.request, 'x');
     } finally {
@@ -266,7 +270,7 @@ describe('logger API', () => {
       await client.error('kept');
       await client.close();
       assert.deepEqual(
-        bodies.map((b) => b.input?.message),
+        bodies.map((b) => firstEvent(b)?.message),
         ['kept'],
       );
     } finally {
@@ -282,7 +286,7 @@ describe('logger API', () => {
       await client.fatal('kept-fatal');
       await client.close();
       assert.equal(bodies.length, 1);
-      assert.equal(bodies[0]!.input?.message, 'kept-fatal');
+      assert.equal(firstEvent(bodies[0]!)?.message, 'kept-fatal');
     } finally {
       restore();
     }

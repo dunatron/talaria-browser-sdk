@@ -369,15 +369,17 @@ describe('permanent ingest circuit breaker', () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/events/ingest')) {
+      if (url.includes('/v1/events')) {
         ingestCalls += 1;
         return new Response(
           JSON.stringify({
-            __className__: 'ApiUnauthorizedException',
-            message: 'Invalid API key',
-            retry: false,
+            type: 'about:blank',
+            title: 'Unauthorized',
+            status: 401,
+            detail: 'Invalid API key',
+            code: 'invalid_key',
           }),
-          { status: 400, headers: { 'content-type': 'application/json' } },
+          { status: 401, headers: { 'content-type': 'application/problem+json' } },
         );
       }
       return new Response(JSON.stringify({}), {
@@ -426,7 +428,7 @@ describe('permanent ingest circuit breaker', () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/events/ingest')) {
+      if (url.includes('/v1/events')) {
         ingestCalls += 1;
         return new Response(
           JSON.stringify({
@@ -469,7 +471,7 @@ describe('permanent ingest circuit breaker', () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/events/ingest')) {
+      if (url.includes('/v1/events')) {
         ingestCalls += 1;
         return new Response('unavailable', { status: 503 });
       }
